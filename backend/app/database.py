@@ -100,6 +100,27 @@ class Feedback(Base):
     created_at = Column(DateTime, default=func.now())
 
 
+class CompareTask(Base):
+    __tablename__ = "compare_tasks"
+
+    id = Column(String, primary_key=True)
+    knowledge_base_id = Column(String, nullable=False)
+    doc_a_id = Column(String, ForeignKey("documents.id"), nullable=False)
+    doc_b_id = Column(String, ForeignKey("documents.id"), nullable=False)
+    status = Column(String(50), default="pending")
+    progress = Column(Integer, default=0)
+    message = Column(Text, default="")
+    result = Column(JSON, nullable=True)
+    error_message = Column(Text, default="")
+    doc_a_version = Column(String, default="")
+    doc_b_version = Column(String, default="")
+    created_at = Column(DateTime, default=func.now())
+    completed_at = Column(DateTime, nullable=True)
+
+    doc_a = relationship("Document", foreign_keys=[doc_a_id])
+    doc_b = relationship("Document", foreign_keys=[doc_b_id])
+
+
 engine = create_engine(
     f"sqlite:///{settings.DB_PATH}",
     echo=False,

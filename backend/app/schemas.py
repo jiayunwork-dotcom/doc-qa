@@ -155,3 +155,67 @@ class FeedbackStatsResponse(BaseModel):
     positive_count: int = 0
     negative_count: int = 0
     positive_rate: float = 0.0
+
+
+class CompareRequest(BaseModel):
+    knowledge_base_id: str
+    doc_a_id: str
+    doc_b_id: str
+
+
+class CompareTaskResponse(BaseModel):
+    task_id: str
+    status: str
+    progress: int = 0
+    message: str = ""
+
+
+class CompareChunkInfo(BaseModel):
+    chunk_id: str
+    content: str
+    page_number: Optional[int] = None
+    chunk_index: int = 0
+    similarity: Optional[float] = None
+
+
+class ComparePair(BaseModel):
+    chunk_a: CompareChunkInfo
+    chunk_b: CompareChunkInfo
+    similarity: float
+
+
+class CompareDiffPair(ComparePair):
+    diff_a: str = ""
+    diff_b: str = ""
+
+
+class CompareDocInfo(BaseModel):
+    id: str
+    filename: str
+    chunk_count: int = 0
+    unique_count: int = 0
+
+
+class CompareSummary(BaseModel):
+    total_chunks_a: int = 0
+    total_chunks_b: int = 0
+    unique_a_count: int = 0
+    unique_b_count: int = 0
+    similar_count: int = 0
+    repeated_count: int = 0
+
+
+class CompareResultResponse(BaseModel):
+    task_id: str
+    status: str
+    progress: int = 0
+    message: str = ""
+    doc_a: Optional[CompareDocInfo] = None
+    doc_b: Optional[CompareDocInfo] = None
+    summary: Optional[CompareSummary] = None
+    unique_a: List[CompareChunkInfo] = []
+    unique_b: List[CompareChunkInfo] = []
+    similar_pairs: List[CompareDiffPair] = []
+    repeated_pairs: List[ComparePair] = []
+    thresholds: Optional[dict] = None
+    error_message: str = ""

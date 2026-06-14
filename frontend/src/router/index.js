@@ -20,6 +20,11 @@ const routes = [
     path: '/knowledge-bases/:kbId/debug',
     name: 'SearchDebug',
     component: () => import('@/views/SearchDebug.vue')
+  },
+  {
+    path: '/knowledge-bases/:id/compare/:taskId',
+    name: 'CompareResult',
+    component: () => import('@/views/CompareResult.vue')
   }
 ]
 

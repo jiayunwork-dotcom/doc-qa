@@ -69,3 +69,11 @@ export function submitFeedback(data) {
 export function getFeedbackStats(kbId) {
   return request.get(`/api/feedbacks/stats/${kbId}`)
 }
+
+export function createCompareTask(data) {
+  return request.post('/api/compare', data)
+}
+
+export function getCompareResult(taskId) {
+  return request.get(`/api/compare/task/${taskId}`)
+}

@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 from .config import settings
 from .database import init_db
-from .routers import knowledge_bases, documents, qa, conversations, feedbacks
+from .routers import knowledge_bases, documents, qa, conversations, feedbacks, compare
 
 
 @asynccontextmanager
@@ -32,6 +32,7 @@ app.include_router(documents.router)
 app.include_router(qa.router)
 app.include_router(conversations.router)
 app.include_router(feedbacks.router)
+app.include_router(compare.router)
 
 
 @app.get("/api/health")

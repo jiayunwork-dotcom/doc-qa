@@ -23,7 +23,10 @@
       <div class="doc-panel">
         <div class="panel-header">
           <span class="panel-title">文档管理</span>
-          <el-button type="primary" size="small" :icon="Upload" @click="triggerUpload">上传文档</el-button>
+          <div class="panel-actions">
+            <el-button type="success" size="small" :icon="DataAnalysis" @click="showCompareDialog = true">对比分析</el-button>
+            <el-button type="primary" size="small" :icon="Upload" @click="triggerUpload">上传文档</el-button>
+          </div>
           <input
             ref="fileInput"
             type="file"
@@ -250,6 +253,43 @@
         <el-button type="primary" @click="saveSettings">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="showCompareDialog" title="文档对比分析" width="520px">
+      <div class="compare-select-form">
+        <el-form label-width="100px">
+          <el-form-item label="文档 A">
+            <el-select v-model="compareDocA" placeholder="请选择文档 A" style="width: 100%" filterable>
+              <el-option
+                v-for="doc in readyDocuments"
+                :key="doc.id"
+                :label="doc.filename"
+                :value="doc.id"
+                :disabled="doc.id === compareDocB"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="文档 B">
+            <el-select v-model="compareDocB" placeholder="请选择文档 B" style="width: 100%" filterable>
+              <el-option
+                v-for="doc in readyDocuments"
+                :key="doc.id"
+                :label="doc.filename"
+                :value="doc.id"
+                :disabled="doc.id === compareDocA"
+              />
+            </el-select>
+          </el-form-item>
+        </el-form>
+        <div class="compare-hint">
+          <el-icon><InfoFilled /></el-icon>
+          <span>选择两篇状态为「就绪」的文档进行语义对比分析</span>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="showCompareDialog = false">取消</el-button>
+        <el-button type="primary" :disabled="!canCompare" @click="startCompare">开始对比</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -259,12 +299,12 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowLeft, Warning, Setting, Upload, Document, Delete,
-  Message, User, Plus, Check
+  Message, User, Plus, Check, DataAnalysis, InfoFilled
 } from '@element-plus/icons-vue'
 import {
   getKnowledgeBase, updateKnowledgeBase, listDocuments, uploadDocument,
   getTaskStatus, deleteDocument, askQuestion, listConversations, getConversationMessages, deleteConversation,
-  submitFeedback, getFeedbackStats
+  submitFeedback, getFeedbackStats, createCompareTask
 } from '@/api'
 
 const route = useRoute()
@@ -290,6 +330,18 @@ const conversations = ref([])
 const chatScroll = ref(null)
 const feedbackStats = ref({ total_count: 0, positive_rate: 0, positive_count: 0, negative_count: 0 })
 const loadingFeedbackStats = ref(false)
+
+const showCompareDialog = ref(false)
+const compareDocA = ref('')
+const compareDocB = ref('')
+
+const readyDocuments = computed(() => {
+  return documents.value.filter(d => d.status === 'ready')
+})
+
+const canCompare = computed(() => {
+  return compareDocA.value && compareDocB.value && compareDocA.value !== compareDocB.value
+})
 
 function formatSize(bytes) {
   if (!bytes) return '0 B'
@@ -555,6 +607,21 @@ async function sendQuestion() {
   } finally {
     isAsking.value = false
     scrollToBottom()
+  }
+}
+
+async function startCompare() {
+  if (!canCompare.value) return
+  try {
+    const res = await createCompareTask({
+      knowledge_base_id: kbId.value,
+      doc_a_id: compareDocA.value,
+      doc_b_id: compareDocB.value
+    })
+    showCompareDialog.value = false
+    router.push(`/knowledge-bases/${kbId.value}/compare/${res.task_id}`)
+  } catch (e) {
+    ElMessage.error('创建对比任务失败')
   }
 }
 
@@ -1015,5 +1082,31 @@ onMounted(async () => {
 .stats-label {
   font-size: 12px;
   color: #909399;
+}
+
+.panel-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.compare-select-form {
+  padding: 10px 0;
+}
+
+.compare-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 12px;
+  background: #ecf5ff;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #409eff;
+  margin-top: 8px;
+}
+
+.compare-hint .el-icon {
+  font-size: 16px;
+  flex-shrink: 0;
 }
 </style>

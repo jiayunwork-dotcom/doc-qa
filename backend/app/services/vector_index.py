@@ -178,6 +178,27 @@ class VectorIndex:
             self._chunk_ids = valid_chunk_ids
             self._deleted_mask = set()
 
+    def get_vectors_by_ids(self, chunk_ids: List[str]) -> Dict[str, np.ndarray]:
+        with self._lock:
+            if self._index is None or self._index.ntotal == 0:
+                return {}
+
+            id_to_idx = {cid: i for i, cid in enumerate(self._chunk_ids)}
+            target_indices = [id_to_idx[cid] for cid in chunk_ids if cid in id_to_idx and cid not in self._deleted_mask]
+
+            if not target_indices:
+                return {}
+
+            xb = faiss.rev_swig_ptr(self._index.get_xb(), self._index.ntotal * self.dimension)
+            xb = np.array(xb).reshape(self._index.ntotal, self.dimension).astype(np.float32)
+
+            result = {}
+            for cid in chunk_ids:
+                if cid in id_to_idx and cid not in self._deleted_mask:
+                    idx = id_to_idx[cid]
+                    result[cid] = xb[idx].copy()
+            return result
+
     def delete(self):
         with self._lock:
             if os.path.exists(self._index_path):

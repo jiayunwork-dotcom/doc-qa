@@ -140,6 +140,12 @@ def delete_document(doc_id: str, db: Session = Depends(get_db)):
         except Exception:
             pass
 
+    try:
+        from ..services.compare import invalidate_compare_cache_for_document
+        invalidate_compare_cache_for_document(doc_id)
+    except Exception:
+        pass
+
     db.delete(doc)
     db.commit()
 
