@@ -1,0 +1,52 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: docqa-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: docqa-backend
+    restart: unless-stopped
+    depends_on:
+      - redis
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - LLM_MODE=${LLM_MODE:-local}
+      - LOCAL_LLM_MODEL=${LOCAL_LLM_MODEL:-Qwen/Qwen2-0.5B-Instruct}
+      - REMOTE_API_KEY=${REMOTE_API_KEY:-}
+      - REMOTE_API_ENDPOINT=${REMOTE_API_ENDPOINT:-https://api.openai.com/v1}
+      - REMOTE_MODEL_NAME=${REMOTE_MODEL_NAME:-gpt-3.5-turbo}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
+    volumes:
+      - backend_data:/app/data
+      - model_cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: docqa-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
+volumes:
+  redis_data:
+  backend_data:
+  model_cache:
