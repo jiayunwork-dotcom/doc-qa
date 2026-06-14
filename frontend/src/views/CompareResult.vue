@@ -9,6 +9,23 @@
         <span class="page-title">文档对比分析</span>
       </div>
       <div class="nav-right">
+        <el-tooltip content="显示已忽略项" placement="bottom">
+          <el-switch
+            v-model="showIgnored"
+            @change="toggleShowIgnored"
+            style="margin-right: 12px;"
+          />
+        </el-tooltip>
+        <el-button
+          type="primary"
+          size="small"
+          :loading="exporting"
+          :icon="Download"
+          :disabled="result?.status !== 'completed'"
+          @click="handleExportPdf"
+        >
+          {{ exporting ? '生成中...' : '导出PDF' }}
+        </el-button>
         <el-tag v-if="result?.status === 'completed'" type="success" size="small">对比完成</el-tag>
         <el-tag v-else-if="result?.status === 'error'" type="danger" size="small">对比失败</el-tag>
         <el-tag v-else type="warning" size="small">正在处理...</el-tag>
@@ -90,7 +107,7 @@
             <div class="repeated-content">
               <el-empty v-if="!result.repeated_pairs || result.repeated_pairs.length === 0" description="无高度重复内容" :image-size="80" />
               <el-table v-else :data="result.repeated_pairs" stripe>
-                <el-table-column label="文档 A" min-width="300">
+                <el-table-column label="文档 A" min-width="260">
                   <template #default="{ row }">
                     <div class="repeated-cell">
                       <div class="cell-meta">
@@ -101,12 +118,12 @@
                     </div>
                   </template>
                 </el-table-column>
-                <el-table-column label="相似度" width="120" align="center">
+                <el-table-column label="相似度" width="100" align="center">
                   <template #default="{ row }">
                     <el-tag type="success" size="small">{{ formatSimilarity(row.similarity) }}</el-tag>
                   </template>
                 </el-table-column>
-                <el-table-column label="文档 B" min-width="300">
+                <el-table-column label="文档 B" min-width="260">
                   <template #default="{ row }">
                     <div class="repeated-cell">
                       <div class="cell-meta">
@@ -115,6 +132,28 @@
                       </div>
                       <div class="cell-content">{{ getContentPreview(row.chunk_b.content) }}</div>
                     </div>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="80" align="center" fixed="right">
+                  <template #default="{ row }">
+                    <el-button
+                      v-if="!isPairIgnored(row.chunk_a.chunk_id, row.chunk_b.chunk_id)"
+                      text
+                      type="warning"
+                      size="small"
+                      @click="handleIgnorePair(row.chunk_a.chunk_id, row.chunk_b.chunk_id, 'repeated')"
+                    >
+                      忽略
+                    </el-button>
+                    <el-button
+                      v-else
+                      text
+                      type="primary"
+                      size="small"
+                      @click="handleUnignorePair(row.chunk_a.chunk_id, row.chunk_b.chunk_id)"
+                    >
+                      取消忽略
+                    </el-button>
                   </template>
                 </el-table-column>
               </el-table>
@@ -128,7 +167,27 @@
                 <div v-for="(pair, idx) in result.similar_pairs" :key="`${pair.chunk_a.chunk_id}-${pair.chunk_b.chunk_id}`" class="diff-item">
                   <div class="diff-header">
                     <div class="diff-title">差异对 #{{ idx + 1 }}</div>
-                    <el-tag size="small" type="warning">相似度 {{ formatSimilarity(pair.similarity) }}</el-tag>
+                    <div class="diff-header-actions">
+                      <el-tag size="small" type="warning" style="margin-right: 8px;">相似度 {{ formatSimilarity(pair.similarity) }}</el-tag>
+                      <el-button
+                        v-if="!isPairIgnored(pair.chunk_a.chunk_id, pair.chunk_b.chunk_id)"
+                        text
+                        type="warning"
+                        size="small"
+                        @click="handleIgnorePair(pair.chunk_a.chunk_id, pair.chunk_b.chunk_id, 'similar')"
+                      >
+                        忽略
+                      </el-button>
+                      <el-button
+                        v-else
+                        text
+                        type="primary"
+                        size="small"
+                        @click="handleUnignorePair(pair.chunk_a.chunk_id, pair.chunk_b.chunk_id)"
+                      >
+                        取消忽略
+                      </el-button>
+                    </div>
                   </div>
                   <div class="diff-columns">
                     <div class="diff-col">
@@ -180,9 +239,11 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
-  ArrowLeft, Document, CircleClose, Loading
+  ArrowLeft, Document, CircleClose, Loading, Download
 } from '@element-plus/icons-vue'
-import { getCompareResult } from '@/api'
+import {
+  getCompareResult, addIgnorePair, removeIgnorePair, exportComparePdf
+} from '@/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -190,8 +251,11 @@ const kbId = computed(() => route.params.id)
 const taskId = computed(() => route.params.taskId)
 
 const loading = ref(false)
+const exporting = ref(false)
 const result = ref(null)
 const activeTab = ref('unique')
+const showIgnored = ref(false)
+const ignoredPairsMap = ref(new Map())
 let pollTimer = null
 
 function goBack() {
@@ -215,10 +279,26 @@ function getDiffHtml(html) {
   return html
 }
 
+function getPairKey(chunkAId, chunkBId) {
+  return [chunkAId, chunkBId].sort().join('|')
+}
+
+function isPairIgnored(chunkAId, chunkBId) {
+  return ignoredPairsMap.value.has(getPairKey(chunkAId, chunkBId))
+}
+
 async function loadResult() {
   try {
-    const data = await getCompareResult(taskId.value)
+    const data = await getCompareResult(taskId.value, showIgnored.value)
     result.value = data
+
+    const map = new Map()
+    if (data.ignored_pairs && data.ignored_pairs.length) {
+      data.ignored_pairs.forEach(p => {
+        map.set(getPairKey(p.chunk_a_id, p.chunk_b_id), p)
+      })
+    }
+    ignoredPairsMap.value = map
 
     if (data.status === 'completed' || data.status === 'error') {
       stopPolling()
@@ -226,6 +306,60 @@ async function loadResult() {
   } catch (e) {
     ElMessage.error('加载对比结果失败')
     stopPolling()
+  }
+}
+
+async function toggleShowIgnored(val) {
+  showIgnored.value = val
+  await loadResult()
+}
+
+async function handleIgnorePair(chunkAId, chunkBId, ignoreType) {
+  try {
+    await addIgnorePair({
+      task_id: taskId.value,
+      chunk_a_id: chunkAId,
+      chunk_b_id: chunkBId,
+      ignore_type: ignoreType
+    })
+    ElMessage.success('已忽略该条目')
+    await loadResult()
+  } catch (e) {
+    ElMessage.error('操作失败')
+  }
+}
+
+async function handleUnignorePair(chunkAId, chunkBId) {
+  try {
+    await removeIgnorePair(taskId.value, chunkAId, chunkBId)
+    ElMessage.success('已取消忽略')
+    await loadResult()
+  } catch (e) {
+    ElMessage.error('操作失败')
+  }
+}
+
+async function handleExportPdf() {
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    const blob = await exportComparePdf(taskId.value)
+    const url = window.URL.createObjectURL(new Blob([blob]))
+    const link = document.createElement('a')
+    link.href = url
+    const docA = result.value?.doc_a?.filename || 'docA'
+    const docB = result.value?.doc_b?.filename || 'docB'
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    link.setAttribute('download', `对比报告_${docA.slice(0, 15)}_vs_${docB.slice(0, 15)}_${ts}.pdf`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+    ElMessage.success('PDF导出成功')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || 'PDF导出失败')
+  } finally {
+    exporting.value = false
   }
 }
 
@@ -541,6 +675,11 @@ onUnmounted(() => {
   padding: 12px 16px;
   background: #fafafa;
   border-bottom: 1px solid #ebeef5;
+}
+
+.diff-header-actions {
+  display: flex;
+  align-items: center;
 }
 
 .diff-title {

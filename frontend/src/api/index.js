@@ -74,6 +74,36 @@ export function createCompareTask(data) {
   return request.post('/api/compare', data)
 }
 
-export function getCompareResult(taskId) {
-  return request.get(`/api/compare/task/${taskId}`)
+export function getCompareResult(taskId, includeIgnored = false) {
+  return request.get(`/api/compare/task/${taskId}`, { params: { include_ignored: includeIgnored } })
+}
+
+export function addIgnorePair(data) {
+  return request.post('/api/compare/ignore', data)
+}
+
+export function removeIgnorePair(taskId, chunkAId, chunkBId) {
+  return request.delete(`/api/compare/ignore/${taskId}/${chunkAId}/${chunkBId}`)
+}
+
+export function listIgnorePairs(taskId) {
+  return request.get(`/api/compare/ignore/list/${taskId}`)
+}
+
+export function exportComparePdf(taskId) {
+  return request.get(`/api/compare/task/${taskId}/export-pdf`, {
+    responseType: 'blob'
+  })
+}
+
+export function createBatchCompare(data) {
+  return request.post('/api/compare/batch', data)
+}
+
+export function getBatchCompareStatus(taskId) {
+  return request.get(`/api/compare/batch/${taskId}`)
+}
+
+export function getBatchCompareOverview(taskId) {
+  return request.get(`/api/compare/batch/${taskId}/overview`)
 }

@@ -10,6 +10,16 @@
         <el-tag v-if="kb" size="small" type="info">{{ kb.document_count }} 篇文档</el-tag>
       </div>
       <div class="nav-right">
+        <el-button
+          v-if="selectedDocIds.length >= 3"
+          type="warning"
+          size="small"
+          :icon="Rank"
+          :loading="batchComparing"
+          @click="startBatchCompare"
+        >
+          批量对比 ({{ selectedDocIds.length }})
+        </el-button>
         <el-button text @click="goToDebug">
           <el-icon><Warning /></el-icon> 检索调试
         </el-button>
@@ -24,6 +34,15 @@
         <div class="panel-header">
           <span class="panel-title">文档管理</span>
           <div class="panel-actions">
+            <el-button
+              v-if="selectedDocIds.length > 0"
+              type="info"
+              size="small"
+              plain
+              @click="clearSelection"
+            >
+              取消选择 ({{ selectedDocIds.length }})
+            </el-button>
             <el-button type="success" size="small" :icon="DataAnalysis" @click="showCompareDialog = true">对比分析</el-button>
             <el-button type="primary" size="small" :icon="Upload" @click="triggerUpload">上传文档</el-button>
           </div>
@@ -51,8 +70,15 @@
 
         <el-scrollbar class="doc-list">
           <el-empty v-if="!documentsLoading && documents.length === 0" description="暂无文档" :image-size="80" />
-          <div v-for="doc in documents" :key="doc.id" class="doc-item">
+          <div v-for="doc in documents" :key="doc.id" class="doc-item" :class="{ 'is-selected': selectedDocIds.includes(doc.id) }">
             <div class="doc-item-left">
+              <el-checkbox
+                v-if="doc.status === 'ready'"
+                :model-value="selectedDocIds.includes(doc.id)"
+                @change="(val) => toggleDocSelection(doc.id, val)"
+                style="margin-right: 8px;"
+              />
+              <el-icon v-else style="width: 14px; height: 14px; margin-right: 8px;"></el-icon>
               <el-icon :class="getFileIconClass(doc.file_type)"><Document /></el-icon>
               <div class="doc-info">
                 <div class="doc-name" :title="doc.filename">{{ doc.filename }}</div>
@@ -297,12 +323,12 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowLeft, Warning, Setting, Upload, Document, Delete,
-  Message, User, Plus, Check, DataAnalysis, InfoFilled
+  Message, User, Plus, Check, DataAnalysis, InfoFilled, Rank
 } from '@element-plus/icons-vue'
 import {
   getKnowledgeBase, updateKnowledgeBase, listDocuments, uploadDocument,
   getTaskStatus, deleteDocument, askQuestion, listConversations, getConversationMessages, deleteConversation,
-  submitFeedback, getFeedbackStats, createCompareTask
+  submitFeedback, getFeedbackStats, createCompareTask, createBatchCompare
 } from '@/api'
 
 const route = useRoute()
@@ -319,6 +345,8 @@ const documentsLoading = ref(false)
 const fileInput = ref(null)
 const isDragging = ref(false)
 const uploadingTasks = reactive({})
+const selectedDocIds = ref([])
+const batchComparing = ref(false)
 
 const messages = ref([])
 const questionInput = ref('')
@@ -400,6 +428,40 @@ function goBack() {
 
 function goToDebug() {
   router.push(`/knowledge-bases/${kbId.value}/debug`)
+}
+
+function toggleDocSelection(docId, checked) {
+  if (checked) {
+    if (!selectedDocIds.value.includes(docId)) {
+      selectedDocIds.value.push(docId)
+    }
+  } else {
+    selectedDocIds.value = selectedDocIds.value.filter(id => id !== docId)
+  }
+}
+
+function clearSelection() {
+  selectedDocIds.value = []
+}
+
+async function startBatchCompare() {
+  if (selectedDocIds.value.length < 3) {
+    ElMessage.warning('请至少选择3篇文档')
+    return
+  }
+  batchComparing.value = true
+  try {
+    const res = await createBatchCompare({
+      knowledge_base_id: kbId.value,
+      document_ids: selectedDocIds.value
+    })
+    ElMessage.success(`批量对比任务已创建，共 ${res.total_pairs} 对文档`)
+    router.push(`/knowledge-bases/${kbId.value}/batch-compare/${res.task_id}`)
+  } catch (e) {
+    ElMessage.error('创建批量对比任务失败')
+  } finally {
+    batchComparing.value = false
+  }
 }
 
 async function loadKb() {
@@ -485,6 +547,7 @@ async function confirmDeleteDoc(doc) {
   try {
     await ElMessageBox.confirm(`确定删除文档「${doc.filename}」吗？`, '删除确认', { type: 'warning' })
     await deleteDocument(doc.id)
+    selectedDocIds.value = selectedDocIds.value.filter(id => id !== doc.id)
     ElMessage.success('删除成功')
     loadDocuments()
   } catch (e) {}
@@ -675,7 +738,7 @@ onMounted(async () => {
 }
 
 .doc-panel {
-  width: 380px;
+  width: 420px;
   background: #fff;
   border-right: 1px solid #ebeef5;
   display: flex;
@@ -740,10 +803,15 @@ onMounted(async () => {
   justify-content: space-between;
   align-items: center;
   gap: 8px;
+  transition: background 0.2s;
 }
 
 .doc-item:hover {
   background: #fafafa;
+}
+
+.doc-item.is-selected {
+  background: #ecf5ff;
 }
 
 .doc-item-left {

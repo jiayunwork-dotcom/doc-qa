@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text, DateTime,
-    ForeignKey, Float, Boolean, JSON
+    ForeignKey, Float, Boolean, JSON, UniqueConstraint
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from sqlalchemy.sql import func
@@ -119,6 +119,39 @@ class CompareTask(Base):
 
     doc_a = relationship("Document", foreign_keys=[doc_a_id])
     doc_b = relationship("Document", foreign_keys=[doc_b_id])
+
+
+class CompareIgnore(Base):
+    __tablename__ = "compare_ignores"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    doc_a_id = Column(String, ForeignKey("documents.id"), nullable=False)
+    doc_b_id = Column(String, ForeignKey("documents.id"), nullable=False)
+    chunk_a_id = Column(String, ForeignKey("chunks.id"), nullable=False)
+    chunk_b_id = Column(String, ForeignKey("chunks.id"), nullable=False)
+    ignore_type = Column(String(20), default="pair")
+    created_at = Column(DateTime, default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('doc_a_id', 'doc_b_id', 'chunk_a_id', 'chunk_b_id', name='uq_ignore_pair'),
+    )
+
+
+class BatchCompareTask(Base):
+    __tablename__ = "batch_compare_tasks"
+
+    id = Column(String, primary_key=True)
+    knowledge_base_id = Column(String, nullable=False)
+    document_ids = Column(JSON, default=list)
+    status = Column(String(50), default="pending")
+    progress = Column(Integer, default=0)
+    message = Column(Text, default="")
+    total_pairs = Column(Integer, default=0)
+    completed_pairs = Column(Integer, default=0)
+    task_results = Column(JSON, default=list)
+    error_message = Column(Text, default="")
+    created_at = Column(DateTime, default=func.now())
+    completed_at = Column(DateTime, nullable=True)
 
 
 engine = create_engine(

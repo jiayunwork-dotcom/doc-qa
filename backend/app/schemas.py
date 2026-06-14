@@ -219,3 +219,61 @@ class CompareResultResponse(BaseModel):
     repeated_pairs: List[ComparePair] = []
     thresholds: Optional[dict] = None
     error_message: str = ""
+    ignored_pairs: List[dict] = []
+
+
+class IgnorePairRequest(BaseModel):
+    task_id: str
+    chunk_a_id: str
+    chunk_b_id: str
+    ignore_type: str = "pair"
+
+
+class IgnorePairResponse(BaseModel):
+    id: str
+    doc_a_id: str
+    doc_b_id: str
+    chunk_a_id: str
+    chunk_b_id: str
+    ignore_type: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class BatchCompareRequest(BaseModel):
+    knowledge_base_id: str
+    document_ids: List[str]
+
+
+class BatchCompareTaskResponse(BaseModel):
+    task_id: str
+    status: str
+    progress: int = 0
+    message: str = ""
+    total_pairs: int = 0
+    completed_pairs: int = 0
+
+
+class BatchCompareMatrixCell(BaseModel):
+    doc_a_id: str
+    doc_b_id: str
+    doc_a_name: str
+    doc_b_name: str
+    repeat_rate: float = 0.0
+    repeated_count: int = 0
+    min_chunk_count: int = 0
+    task_id: str = ""
+    status: str = "pending"
+
+
+class BatchCompareOverviewResponse(BaseModel):
+    task_id: str
+    status: str
+    progress: int = 0
+    message: str = ""
+    document_ids: List[str] = []
+    document_names: List[str] = []
+    matrix: List[List[BatchCompareMatrixCell]] = []
+    error_message: str = ""

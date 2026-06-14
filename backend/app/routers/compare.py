@@ -1,9 +1,19 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from datetime import datetime
+from typing import List
+import io
+import itertools
+import threading
+import uuid
 
-from ..database import get_db, Document, KnowledgeBase, CompareTask
-from ..schemas import CompareRequest, CompareTaskResponse, CompareResultResponse
+from ..database import get_db, Document, KnowledgeBase, CompareTask, CompareIgnore, BatchCompareTask, Chunk
+from ..schemas import (
+    CompareRequest, CompareTaskResponse, CompareResultResponse,
+    IgnorePairRequest, IgnorePairResponse,
+    BatchCompareRequest, BatchCompareTaskResponse, BatchCompareOverviewResponse, BatchCompareMatrixCell
+)
 from ..services.compare import (
     start_compare_task,
     find_cached_compare,
@@ -12,6 +22,21 @@ from ..services.compare import (
 from ..services.task_queue import get_task_manager
 
 router = APIRouter(prefix="/api/compare", tags=["compare"])
+
+
+def get_ignored_pairs(db: Session, doc_a_id: str, doc_b_id: str) -> List[CompareIgnore]:
+    return db.query(CompareIgnore).filter(
+        ((CompareIgnore.doc_a_id == doc_a_id) & (CompareIgnore.doc_b_id == doc_b_id)) |
+        ((CompareIgnore.doc_a_id == doc_b_id) & (CompareIgnore.doc_b_id == doc_a_id))
+    ).all()
+
+
+def is_pair_ignored(ignored_list: List[CompareIgnore], chunk_a_id: str, chunk_b_id: str) -> bool:
+    for ig in ignored_list:
+        if (ig.chunk_a_id == chunk_a_id and ig.chunk_b_id == chunk_b_id) or \
+           (ig.chunk_a_id == chunk_b_id and ig.chunk_b_id == chunk_a_id):
+            return True
+    return False
 
 
 @router.post("", response_model=CompareTaskResponse)
@@ -55,7 +80,7 @@ def create_compare_task(request: CompareRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/task/{task_id}", response_model=CompareResultResponse)
-def get_compare_result(task_id: str, db: Session = Depends(get_db)):
+def get_compare_result(task_id: str, include_ignored: bool = False, db: Session = Depends(get_db)):
     task_mgr = get_task_manager()
     mem_task = task_mgr.get_task(task_id)
 
@@ -80,7 +105,24 @@ def get_compare_result(task_id: str, db: Session = Depends(get_db)):
 
     result = task.result or {}
 
+    ignored_list = get_ignored_pairs(db, task.doc_a_id, task.doc_b_id)
+    ignored_pairs = [{"chunk_a_id": ig.chunk_a_id, "chunk_b_id": ig.chunk_b_id} for ig in ignored_list]
+
     if task.status == "completed" and result:
+        if not include_ignored:
+            result["similar_pairs"] = [
+                p for p in result.get("similar_pairs", [])
+                if not is_pair_ignored(ignored_list, p["chunk_a"]["chunk_id"], p["chunk_b"]["chunk_id"])
+            ]
+            result["repeated_pairs"] = [
+                p for p in result.get("repeated_pairs", [])
+                if not is_pair_ignored(ignored_list, p["chunk_a"]["chunk_id"], p["chunk_b"]["chunk_id"])
+            ]
+            summary = result.get("summary", {})
+            summary["similar_count"] = len(result["similar_pairs"])
+            summary["repeated_count"] = len(result["repeated_pairs"])
+            result["summary"] = summary
+
         response = CompareResultResponse(
             task_id=task.id,
             status=task.status,
@@ -94,7 +136,8 @@ def get_compare_result(task_id: str, db: Session = Depends(get_db)):
             unique_b=result.get("unique_b", []),
             similar_pairs=result.get("similar_pairs", []),
             repeated_pairs=result.get("repeated_pairs", []),
-            thresholds=result.get("thresholds")
+            thresholds=result.get("thresholds"),
+            ignored_pairs=ignored_pairs
         )
     else:
         response = CompareResultResponse(
@@ -102,7 +145,639 @@ def get_compare_result(task_id: str, db: Session = Depends(get_db)):
             status=task.status,
             progress=task.progress,
             message=task.message,
-            error_message=task.error_message or ""
+            error_message=task.error_message or "",
+            ignored_pairs=ignored_pairs
         )
 
     return response
+
+
+@router.post("/ignore", response_model=IgnorePairResponse)
+def add_ignore_pair(request: IgnorePairRequest, db: Session = Depends(get_db)):
+    task = db.query(CompareTask).filter(CompareTask.id == request.task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    existing = db.query(CompareIgnore).filter(
+        ((CompareIgnore.doc_a_id == task.doc_a_id) & (CompareIgnore.doc_b_id == task.doc_b_id) &
+         (CompareIgnore.chunk_a_id == request.chunk_a_id) & (CompareIgnore.chunk_b_id == request.chunk_b_id)) |
+        ((CompareIgnore.doc_a_id == task.doc_b_id) & (CompareIgnore.doc_b_id == task.doc_a_id) &
+         (CompareIgnore.chunk_a_id == request.chunk_b_id) & (CompareIgnore.chunk_b_id == request.chunk_a_id))
+    ).first()
+
+    if existing:
+        return IgnorePairResponse(
+            id=existing.id,
+            doc_a_id=existing.doc_a_id,
+            doc_b_id=existing.doc_b_id,
+            chunk_a_id=existing.chunk_a_id,
+            chunk_b_id=existing.chunk_b_id,
+            ignore_type=existing.ignore_type,
+            created_at=existing.created_at
+        )
+
+    ignore = CompareIgnore(
+        doc_a_id=task.doc_a_id,
+        doc_b_id=task.doc_b_id,
+        chunk_a_id=request.chunk_a_id,
+        chunk_b_id=request.chunk_b_id,
+        ignore_type=request.ignore_type
+    )
+    db.add(ignore)
+    db.commit()
+    db.refresh(ignore)
+
+    return IgnorePairResponse(
+        id=ignore.id,
+        doc_a_id=ignore.doc_a_id,
+        doc_b_id=ignore.doc_b_id,
+        chunk_a_id=ignore.chunk_a_id,
+        chunk_b_id=ignore.chunk_b_id,
+        ignore_type=ignore.ignore_type,
+        created_at=ignore.created_at
+    )
+
+
+@router.delete("/ignore/{task_id}/{chunk_a_id}/{chunk_b_id}")
+def remove_ignore_pair(task_id: str, chunk_a_id: str, chunk_b_id: str, db: Session = Depends(get_db)):
+    task = db.query(CompareTask).filter(CompareTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    ignore = db.query(CompareIgnore).filter(
+        ((CompareIgnore.doc_a_id == task.doc_a_id) & (CompareIgnore.doc_b_id == task.doc_b_id) &
+         (CompareIgnore.chunk_a_id == chunk_a_id) & (CompareIgnore.chunk_b_id == chunk_b_id)) |
+        ((CompareIgnore.doc_a_id == task.doc_b_id) & (CompareIgnore.doc_b_id == task.doc_a_id) &
+         (CompareIgnore.chunk_a_id == chunk_b_id) & (CompareIgnore.chunk_b_id == chunk_a_id))
+    ).first()
+
+    if not ignore:
+        raise HTTPException(status_code=404, detail="忽略记录不存在")
+
+    db.delete(ignore)
+    db.commit()
+    return {"success": True}
+
+
+@router.get("/ignore/list/{task_id}")
+def list_ignore_pairs(task_id: str, db: Session = Depends(get_db)):
+    task = db.query(CompareTask).filter(CompareTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    ignored = get_ignored_pairs(db, task.doc_a_id, task.doc_b_id)
+    return [
+        {
+            "id": ig.id,
+            "chunk_a_id": ig.chunk_a_id,
+            "chunk_b_id": ig.chunk_b_id,
+            "ignore_type": ig.ignore_type,
+            "created_at": ig.created_at
+        }
+        for ig in ignored
+    ]
+
+
+def process_batch_compare(batch_task_id: str, kb_id: str, doc_ids: List[str]):
+    db = SessionLocal()
+    try:
+        batch_task = db.query(BatchCompareTask).filter(BatchCompareTask.id == batch_task_id).first()
+        if not batch_task:
+            return
+
+        pairs = list(itertools.combinations(doc_ids, 2))
+        batch_task.total_pairs = len(pairs)
+        batch_task.completed_pairs = 0
+        batch_task.status = "processing"
+        batch_task.message = "正在批量对比..."
+        db.commit()
+
+        task_mgr = get_task_manager()
+        results = []
+
+        for idx, (doc_a_id, doc_b_id) in enumerate(pairs):
+            try:
+                cached = find_cached_compare(kb_id, doc_a_id, doc_b_id)
+                if cached:
+                    task_id = cached.id
+                else:
+                    task_id = start_compare_task(kb_id, doc_a_id, doc_b_id)
+
+                    while True:
+                        t = get_compare_task_from_db(task_id)
+                        if t and t.status in ("completed", "error"):
+                            break
+                        import time
+                        time.sleep(1)
+
+                results.append({
+                    "doc_a_id": doc_a_id,
+                    "doc_b_id": doc_b_id,
+                    "task_id": task_id
+                })
+            except Exception as e:
+                results.append({
+                    "doc_a_id": doc_a_id,
+                    "doc_b_id": doc_b_id,
+                    "task_id": "",
+                    "error": str(e)
+                })
+
+            batch_task.completed_pairs = idx + 1
+            batch_task.progress = int((idx + 1) / len(pairs) * 100)
+            batch_task.task_results = results
+            db.commit()
+
+        batch_task.status = "completed"
+        batch_task.progress = 100
+        batch_task.message = "批量对比完成"
+        batch_task.completed_at = datetime.now()
+        db.commit()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        if batch_task:
+            batch_task.status = "error"
+            batch_task.error_message = str(e)
+            db.commit()
+    finally:
+        db.close()
+
+
+@router.post("/batch", response_model=BatchCompareTaskResponse)
+def create_batch_compare(request: BatchCompareRequest, db: Session = Depends(get_db)):
+    kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == request.knowledge_base_id).first()
+    if not kb:
+        raise HTTPException(status_code=404, detail="知识库不存在")
+
+    if len(request.document_ids) < 3:
+        raise HTTPException(status_code=400, detail="请至少选择3篇文档进行批量对比")
+
+    for doc_id in request.document_ids:
+        doc = db.query(Document).filter(Document.id == doc_id).first()
+        if not doc:
+            raise HTTPException(status_code=400, detail=f"文档 {doc_id} 不存在")
+        if doc.knowledge_base_id != request.knowledge_base_id:
+            raise HTTPException(status_code=400, detail="所有文档必须属于同一个知识库")
+        if doc.status != "ready":
+            raise HTTPException(status_code=400, detail=f"文档 {doc.filename} 未处理完成")
+
+    batch_task_id = str(uuid.uuid4())
+    pairs = list(itertools.combinations(request.document_ids, 2))
+
+    batch_task = BatchCompareTask(
+        id=batch_task_id,
+        knowledge_base_id=request.knowledge_base_id,
+        document_ids=request.document_ids,
+        status="pending",
+        progress=0,
+        message="批量对比任务已创建",
+        total_pairs=len(pairs),
+        completed_pairs=0,
+        task_results=[]
+    )
+    db.add(batch_task)
+    db.commit()
+
+    thread = threading.Thread(
+        target=process_batch_compare,
+        args=(batch_task_id, request.knowledge_base_id, request.document_ids),
+        daemon=True
+    )
+    thread.start()
+
+    return BatchCompareTaskResponse(
+        task_id=batch_task_id,
+        status="pending",
+        progress=0,
+        message="批量对比任务已创建",
+        total_pairs=len(pairs),
+        completed_pairs=0
+    )
+
+
+@router.get("/batch/{task_id}", response_model=BatchCompareTaskResponse)
+def get_batch_compare_status(task_id: str, db: Session = Depends(get_db)):
+    batch_task = db.query(BatchCompareTask).filter(BatchCompareTask.id == task_id).first()
+    if not batch_task:
+        raise HTTPException(status_code=404, detail="批量对比任务不存在")
+
+    return BatchCompareTaskResponse(
+        task_id=batch_task.id,
+        status=batch_task.status,
+        progress=batch_task.progress,
+        message=batch_task.message,
+        total_pairs=batch_task.total_pairs,
+        completed_pairs=batch_task.completed_pairs
+    )
+
+
+@router.get("/batch/{task_id}/overview", response_model=BatchCompareOverviewResponse)
+def get_batch_compare_overview(task_id: str, db: Session = Depends(get_db)):
+    batch_task = db.query(BatchCompareTask).filter(BatchCompareTask.id == task_id).first()
+    if not batch_task:
+        raise HTTPException(status_code=404, detail="批量对比任务不存在")
+
+    doc_ids = batch_task.document_ids or []
+    doc_map = {}
+    for did in doc_ids:
+        d = db.query(Document).filter(Document.id == did).first()
+        if d:
+            doc_map[did] = d.filename
+
+    doc_names = [doc_map.get(did, did) for did in doc_ids]
+
+    n = len(doc_ids)
+    matrix = []
+
+    task_results = {f"{r.get('doc_a_id')}|{r.get('doc_b_id')}": r for r in (batch_task.task_results or [])}
+
+    for i in range(n):
+        row = []
+        for j in range(n):
+            if i == j:
+                cell = BatchCompareMatrixCell(
+                    doc_a_id=doc_ids[i],
+                    doc_b_id=doc_ids[j],
+                    doc_a_name=doc_names[i],
+                    doc_b_name=doc_names[j],
+                    repeat_rate=100.0,
+                    repeated_count=0,
+                    min_chunk_count=0,
+                    task_id="",
+                    status="self"
+                )
+            else:
+                key_a = f"{doc_ids[i]}|{doc_ids[j]}"
+                key_b = f"{doc_ids[j]}|{doc_ids[i]}"
+                pair_info = task_results.get(key_a) or task_results.get(key_b)
+
+                repeat_rate = 0.0
+                repeated_count = 0
+                min_chunk_count = 0
+                pair_task_id = ""
+                pair_status = "pending"
+
+                if pair_info:
+                    pair_task_id = pair_info.get("task_id", "")
+                    if pair_task_id:
+                        t = get_compare_task_from_db(pair_task_id)
+                        if t and t.status == "completed" and t.result:
+                            pair_status = "completed"
+                            summary = t.result.get("summary", {})
+                            repeated_count = summary.get("repeated_count", 0)
+                            chunks_a = t.result.get("doc_a", {}).get("chunk_count", 0)
+                            chunks_b = t.result.get("doc_b", {}).get("chunk_count", 0)
+                            min_chunk_count = min(chunks_a, chunks_b) if chunks_a and chunks_b else 0
+                            if min_chunk_count > 0:
+                                repeat_rate = round(repeated_count / min_chunk_count * 100, 2)
+                        elif t:
+                            pair_status = t.status
+
+                cell = BatchCompareMatrixCell(
+                    doc_a_id=doc_ids[i],
+                    doc_b_id=doc_ids[j],
+                    doc_a_name=doc_names[i],
+                    doc_b_name=doc_names[j],
+                    repeat_rate=repeat_rate,
+                    repeated_count=repeated_count,
+                    min_chunk_count=min_chunk_count,
+                    task_id=pair_task_id,
+                    status=pair_status
+                )
+            row.append(cell)
+        matrix.append(row)
+
+    return BatchCompareOverviewResponse(
+        task_id=batch_task.id,
+        status=batch_task.status,
+        progress=batch_task.progress,
+        message=batch_task.message,
+        document_ids=doc_ids,
+        document_names=doc_names,
+        matrix=matrix,
+        error_message=batch_task.error_message or ""
+    )
+
+
+@router.get("/task/{task_id}/export-pdf")
+def export_compare_pdf(task_id: str, db: Session = Depends(get_db)):
+    task = get_compare_task_from_db(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if task.status != "completed" or not task.result:
+        raise HTTPException(status_code=400, detail="对比任务未完成，无法导出")
+
+    result = task.result
+    kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == task.knowledge_base_id).first()
+    kb_name = kb.name if kb else ""
+
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
+        from reportlab.lib import colors
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle,
+            ListFlowable, ListItem
+        )
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT
+        import os
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+
+        font_registered = False
+        font_paths = [
+            "C:/Windows/Fonts/msyh.ttc",
+            "C:/Windows/Fonts/msyh.ttf",
+            "C:/Windows/Fonts/simhei.ttf",
+            "C:/Windows/Fonts/simsun.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+            "/usr/share/fonts/truetype/arphic/uming.ttc",
+            "/System/Library/Fonts/PingFang.ttc",
+            "/System/Library/Fonts/STHeiti Light.ttc"
+        ]
+
+        font_path = None
+        for fp in font_paths:
+            if os.path.exists(fp):
+                font_path = fp
+                break
+
+        if font_path:
+            try:
+                pdfmetrics.registerFont(TTFont('ChineseFont', font_path))
+                font_registered = True
+            except Exception:
+                font_registered = False
+
+        cn_font = 'ChineseFont' if font_registered else 'Helvetica'
+
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4,
+                                leftMargin=2 * cm, rightMargin=2 * cm,
+                                topMargin=2 * cm, bottomMargin=2 * cm)
+
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            'CustomTitle', parent=styles['Title'],
+            fontName=cn_font, fontSize=24, leading=32, alignment=TA_CENTER,
+            spaceAfter=30
+        )
+        h1_style = ParagraphStyle(
+            'Heading1CN', parent=styles['Heading1'],
+            fontName=cn_font, fontSize=18, leading=24, spaceAfter=16
+        )
+        h2_style = ParagraphStyle(
+            'Heading2CN', parent=styles['Heading2'],
+            fontName=cn_font, fontSize=14, leading=20, spaceAfter=10
+        )
+        normal_style = ParagraphStyle(
+            'NormalCN', parent=styles['Normal'],
+            fontName=cn_font, fontSize=11, leading=16
+        )
+        center_style = ParagraphStyle(
+            'CenterCN', parent=styles['Normal'],
+            fontName=cn_font, fontSize=12, leading=18, alignment=TA_CENTER
+        )
+        small_style = ParagraphStyle(
+            'SmallCN', parent=styles['Normal'],
+            fontName=cn_font, fontSize=10, leading=14
+        )
+
+        story = []
+
+        story.append(Spacer(1, 4 * cm))
+        story.append(Paragraph("文档对比分析报告", title_style))
+        story.append(Spacer(1, 2 * cm))
+
+        doc_a_name = result.get("doc_a", {}).get("filename", "文档 A")
+        doc_b_name = result.get("doc_b", {}).get("filename", "文档 B")
+        compare_time = task.completed_at.strftime("%Y-%m-%d %H:%M:%S") if task.completed_at else ""
+
+        cover_data = [
+            [Paragraph("知识库名称:", center_style), Paragraph(kb_name or "-", center_style)],
+            [Paragraph("文档 A:", center_style), Paragraph(doc_a_name, center_style)],
+            [Paragraph("文档 B:", center_style), Paragraph(doc_b_name, center_style)],
+            [Paragraph("对比时间:", center_style), Paragraph(compare_time, center_style)]
+        ]
+        cover_table = Table(cover_data, colWidths=[4 * cm, 11 * cm])
+        cover_table.setStyle(TableStyle([
+            ('FONTNAME', (0, 0), (-1, -1), cn_font),
+            ('FONTSIZE', (0, 0), (-1, -1), 12),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+            ('LINEBELOW', (0, 0), (-1, -2), 0.5, colors.grey)
+        ]))
+        story.append(cover_table)
+
+        story.append(PageBreak())
+
+        summary = result.get("summary", {})
+        story.append(Paragraph("一、摘要统计", h1_style))
+
+        unique_total = summary.get("unique_a_count", 0) + summary.get("unique_b_count", 0)
+        similar_count = summary.get("similar_count", 0)
+        repeated_count = summary.get("repeated_count", 0)
+
+        try:
+            labels = ['独有内容', '相似内容', '重复内容']
+            sizes = [unique_total, similar_count, repeated_count]
+            color_list = ['#409eff', '#e6a23c', '#67c23a']
+
+            if sum(sizes) > 0:
+                fig, ax = plt.subplots(figsize=(6, 5))
+                wedges, texts, autotexts = ax.pie(
+                    sizes, labels=labels, colors=color_list,
+                    autopct='%1.1f%%', startangle=90
+                )
+                if font_registered:
+                    from matplotlib.font_manager import FontProperties
+                    font_prop = FontProperties(fname=font_path)
+                    for t in texts:
+                        t.set_fontproperties(font_prop)
+                    for t in autotexts:
+                        t.set_fontproperties(font_prop)
+                ax.axis('equal')
+                plt.title('内容分布', fontsize=14, fontproperties=font_prop if font_registered else None)
+
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                    chart_path = tmp.name
+                plt.savefig(chart_path, dpi=150, bbox_inches='tight')
+                plt.close(fig)
+
+                from reportlab.platypus import Image
+                img = Image(chart_path, width=12 * cm, height=10 * cm)
+                story.append(img)
+                story.append(Spacer(1, 0.5 * cm))
+
+                try:
+                    os.unlink(chart_path)
+                except Exception:
+                    pass
+        except Exception as e:
+            story.append(Paragraph(f"(图表生成失败: {str(e)})", small_style))
+
+        summary_data = [
+            [Paragraph("类别", center_style), Paragraph("数量", center_style)],
+            [Paragraph("文档 A 独有内容", normal_style), Paragraph(str(summary.get("unique_a_count", 0)), center_style)],
+            [Paragraph("文档 B 独有内容", normal_style), Paragraph(str(summary.get("unique_b_count", 0)), center_style)],
+            [Paragraph("相似但有差异", normal_style), Paragraph(str(similar_count), center_style)],
+            [Paragraph("高度重复", normal_style), Paragraph(str(repeated_count), center_style)]
+        ]
+        summary_table = Table(summary_data, colWidths=[9 * cm, 3 * cm])
+        summary_table.setStyle(TableStyle([
+            ('FONTNAME', (0, 0), (-1, -1), cn_font),
+            ('FONTSIZE', (0, 0), (-1, -1), 11),
+            ('ALIGN', (1, 0), (1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f5f7fa')),
+            ('TOPPADDING', (0, 0), (-1, -1), 8),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 8)
+        ]))
+        story.append(summary_table)
+
+        story.append(PageBreak())
+
+        story.append(Paragraph("二、独有内容列表", h1_style))
+
+        story.append(Paragraph("2.1 文档 A 独有内容", h2_style))
+        unique_a = result.get("unique_a", [])
+        if not unique_a:
+            story.append(Paragraph("（无）", small_style))
+        else:
+            for idx, chunk in enumerate(unique_a[:50], 1):
+                content = chunk.get("content", "")[:300].replace('<', '&lt;').replace('>', '&gt;').replace('\n', '<br/>')
+                story.append(Paragraph(
+                    f"<b>第 {idx} 条</b>（分块 #{chunk.get('chunk_index', 0) + 1}"
+                    f"{', 第 ' + str(chunk.get('page_number')) + ' 页' if chunk.get('page_number') else ''}）：",
+                    small_style
+                ))
+                story.append(Paragraph(content, normal_style))
+                story.append(Spacer(1, 0.2 * cm))
+
+        story.append(Spacer(1, 0.5 * cm))
+        story.append(Paragraph("2.2 文档 B 独有内容", h2_style))
+        unique_b = result.get("unique_b", [])
+        if not unique_b:
+            story.append(Paragraph("（无）", small_style))
+        else:
+            for idx, chunk in enumerate(unique_b[:50], 1):
+                content = chunk.get("content", "")[:300].replace('<', '&lt;').replace('>', '&gt;').replace('\n', '<br/>')
+                story.append(Paragraph(
+                    f"<b>第 {idx} 条</b>（分块 #{chunk.get('chunk_index', 0) + 1}"
+                    f"{', 第 ' + str(chunk.get('page_number')) + ' 页' if chunk.get('page_number') else ''}）：",
+                    small_style
+                ))
+                story.append(Paragraph(content, normal_style))
+                story.append(Spacer(1, 0.2 * cm))
+
+        story.append(PageBreak())
+
+        story.append(Paragraph("三、重复内容对照表", h1_style))
+        repeated = result.get("repeated_pairs", [])
+        if not repeated:
+            story.append(Paragraph("（无高度重复内容）", small_style))
+        else:
+            rep_header = [
+                Paragraph("<b>#</b>", center_style),
+                Paragraph("<b>文档 A 内容</b>", center_style),
+                Paragraph("<b>文档 B 内容</b>", center_style),
+                Paragraph("<b>相似度</b>", center_style)
+            ]
+            rep_data = [rep_header]
+            for idx, pair in enumerate(repeated[:50], 1):
+                ca = pair.get("chunk_a", {})
+                cb = pair.get("chunk_b", {})
+                text_a = ca.get("content", "")[:100].replace('<', '&lt;').replace('>', '&gt;').replace('\n', ' ')
+                text_b = cb.get("content", "")[:100].replace('<', '&lt;').replace('>', '&gt;').replace('\n', ' ')
+                sim = f"{(pair.get('similarity', 0) * 100):.1f}%"
+                rep_data.append([
+                    Paragraph(str(idx), small_style),
+                    Paragraph(text_a, small_style),
+                    Paragraph(text_b, small_style),
+                    Paragraph(sim, center_style)
+                ])
+
+            rep_table = Table(rep_data, colWidths=[1 * cm, 5.5 * cm, 5.5 * cm, 2 * cm], repeatRows=1)
+            rep_table.setStyle(TableStyle([
+                ('FONTNAME', (0, 0), (-1, -1), cn_font),
+                ('FONTSIZE', (0, 0), (-1, -1), 9),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f5f7fa')),
+                ('TOPPADDING', (0, 0), (-1, -1), 6),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6)
+            ]))
+            story.append(rep_table)
+
+        story.append(PageBreak())
+
+        story.append(Paragraph("四、差异内容（相似但有差异）", h1_style))
+        similar = result.get("similar_pairs", [])
+        if not similar:
+            story.append(Paragraph("（无相似但有差异内容）", small_style))
+        else:
+            for idx, pair in enumerate(similar[:30], 1):
+                ca = pair.get("chunk_a", {})
+                cb = pair.get("chunk_b", {})
+                sim = f"{(pair.get('similarity', 0) * 100):.1f}%"
+
+                story.append(Paragraph(f"<b>差异对 #{idx}</b>（相似度：{sim}）", h2_style))
+
+                import re
+                diff_a = pair.get("diff_a", "")
+                diff_a_clean = re.sub(r'<span class="diff-equal">', '', diff_a)
+                diff_a_clean = re.sub(r'<span class="diff-del">', '<font color="#f56c6c"><s>', diff_a_clean)
+                diff_a_clean = re.sub(r'<span class="diff-add">', '<font color="#67c23a"><u>', diff_a_clean)
+                diff_a_clean = diff_a_clean.replace('</span>', '</s></u></font>')
+
+                diff_b = pair.get("diff_b", "")
+                diff_b_clean = re.sub(r'<span class="diff-equal">', '', diff_b)
+                diff_b_clean = re.sub(r'<span class="diff-del">', '<font color="#f56c6c"><s>', diff_b_clean)
+                diff_b_clean = re.sub(r'<span class="diff-add">', '<font color="#67c23a"><u>', diff_b_clean)
+                diff_b_clean = diff_b_clean.replace('</span>', '</s></u></font>')
+
+                diff_data = [
+                    [Paragraph(f"<b>文档 A</b>（分块 #{ca.get('chunk_index', 0) + 1}）", small_style),
+                     Paragraph(f"<b>文档 B</b>（分块 #{cb.get('chunk_index', 0) + 1}）", small_style)],
+                    [Paragraph(diff_a_clean[:500], small_style),
+                     Paragraph(diff_b_clean[:500], small_style)]
+                ]
+                diff_table = Table(diff_data, colWidths=[7.5 * cm, 7.5 * cm])
+                diff_table.setStyle(TableStyle([
+                    ('FONTNAME', (0, 0), (-1, -1), cn_font),
+                    ('FONTSIZE', (0, 0), (-1, -1), 9),
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#ecf5ff')),
+                    ('TOPPADDING', (0, 0), (-1, -1), 6),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6)
+                ]))
+                story.append(diff_table)
+                story.append(Spacer(1, 0.3 * cm))
+
+        doc.build(story)
+        buffer.seek(0)
+
+        filename = f"对比报告_{doc_a_name[:20]}_vs_{doc_b_name[:20]}_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
+
+        return StreamingResponse(
+            buffer,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename.encode('utf-8').decode('latin-1')}"}
+        )
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"缺少PDF生成依赖: {str(e)}。请安装 reportlab 和 matplotlib")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"PDF生成失败: {str(e)}")
