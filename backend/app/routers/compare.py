@@ -8,7 +8,7 @@ import itertools
 import threading
 import uuid
 
-from ..database import get_db, Document, KnowledgeBase, CompareTask, CompareIgnore, BatchCompareTask, Chunk
+from ..database import get_db, SessionLocal, Document, KnowledgeBase, CompareTask, CompareIgnore, BatchCompareTask, Chunk
 from ..schemas import (
     CompareRequest, CompareTaskResponse, CompareResultResponse,
     IgnorePairRequest, IgnorePairResponse,
@@ -479,42 +479,118 @@ def export_compare_pdf(task_id: str, db: Session = Depends(get_db)):
         from reportlab.lib import colors
         from reportlab.platypus import (
             SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle,
-            ListFlowable, ListItem
+            ListFlowable, ListItem, Image
         )
         from reportlab.pdfbase import pdfmetrics
         from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
         from reportlab.lib.enums import TA_CENTER, TA_LEFT
         import os
+        import re
+        import tempfile
         import matplotlib
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
+        from matplotlib.font_manager import FontProperties, fontManager
 
-        font_registered = False
-        font_paths = [
-            "C:/Windows/Fonts/msyh.ttc",
-            "C:/Windows/Fonts/msyh.ttf",
-            "C:/Windows/Fonts/simhei.ttf",
-            "C:/Windows/Fonts/simsun.ttc",
-            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-            "/usr/share/fonts/truetype/arphic/uming.ttc",
-            "/System/Library/Fonts/PingFang.ttc",
-            "/System/Library/Fonts/STHeiti Light.ttc"
-        ]
+        def find_chinese_font():
+            font_candidates = []
+            
+            windows_fonts = [
+                "C:/Windows/Fonts/msyh.ttc",
+                "C:/Windows/Fonts/msyhbd.ttc",
+                "C:/Windows/Fonts/msyhl.ttc",
+                "C:/Windows/Fonts/simhei.ttf",
+                "C:/Windows/Fonts/simsun.ttc",
+                "C:/Windows/Fonts/simkai.ttf",
+                "C:/Windows/Fonts/simli.ttf",
+            ]
+            for f in windows_fonts:
+                if os.path.exists(f):
+                    font_candidates.append(f)
+            
+            linux_fonts = [
+                "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+                "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/truetype/arphic/uming.ttc",
+                "/usr/share/fonts/truetype/arphic/ukai.ttc",
+            ]
+            for f in linux_fonts:
+                if os.path.exists(f):
+                    font_candidates.append(f)
+            
+            mac_fonts = [
+                "/System/Library/Fonts/PingFang.ttc",
+                "/System/Library/Fonts/STHeiti Light.ttc",
+                "/System/Library/Fonts/STHeiti Medium.ttc",
+                "/Library/Fonts/Arial Unicode.ttf",
+            ]
+            for f in mac_fonts:
+                if os.path.exists(f):
+                    font_candidates.append(f)
+            
+            for f in fontManager.ttflist:
+                if os.path.exists(f.fname):
+                    fname_lower = f.name.lower()
+                    if any(keyword in fname_lower for keyword in [
+                        'yahei', 'heiti', 'simhei', 'simsun', 'kai',
+                        'pingfang', 'wqy', 'wenquanyi', 'noto sans cjk',
+                        'notosanscjk', 'ar pl', 'stheit'
+                    ]):
+                        if f.fname not in font_candidates:
+                            font_candidates.append(f.fname)
+            
+            return font_candidates
 
-        font_path = None
-        for fp in font_paths:
-            if os.path.exists(fp):
-                font_path = fp
-                break
-
-        if font_path:
+        def register_chinese_font():
+            font_candidates = find_chinese_font()
+            
+            for fp in font_candidates:
+                try:
+                    if fp.lower().endswith('.ttc'):
+                        try:
+                            pdfmetrics.registerFont(TTFont('ChineseFont', fp, fontIndex=0))
+                            print(f"[PDF] 成功注册中文字体: {fp} (fontIndex=0)")
+                            return 'ChineseFont', fp
+                        except Exception as e1:
+                            try:
+                                pdfmetrics.registerFont(TTFont('ChineseFont', fp))
+                                print(f"[PDF] 成功注册中文字体: {fp} (默认索引)")
+                                return 'ChineseFont', fp
+                            except Exception as e2:
+                                print(f"[PDF] 注册字体失败 {fp}: {e2}")
+                                continue
+                    else:
+                        pdfmetrics.registerFont(TTFont('ChineseFont', fp))
+                        print(f"[PDF] 成功注册中文字体: {fp}")
+                        return 'ChineseFont', fp
+                except Exception as e:
+                    print(f"[PDF] 注册字体失败 {fp}: {e}")
+                    continue
+            
             try:
-                pdfmetrics.registerFont(TTFont('ChineseFont', font_path))
-                font_registered = True
-            except Exception:
-                font_registered = False
+                pdfmetrics.registerFont(UnicodeCIDFont('STSong-Light'))
+                print("[PDF] 使用 UnicodeCIDFont STSong-Light 作为后备字体")
+                return 'STSong-Light', None
+            except Exception as e:
+                print(f"[PDF] 注册 CID 字体失败: {e}")
+            
+            return 'Helvetica', None
 
-        cn_font = 'ChineseFont' if font_registered else 'Helvetica'
+        cn_font, font_file = register_chinese_font()
+        font_registered = cn_font != 'Helvetica'
+        print(f"[PDF] 最终使用字体: {cn_font}, 字体文件: {font_file}")
+
+        if font_registered and font_file:
+            try:
+                custom_font_prop = FontProperties(fname=font_file)
+                plt.rcParams['font.sans-serif'] = [custom_font_prop.get_name()]
+                plt.rcParams['axes.unicode_minus'] = False
+                print(f"[PDF] matplotlib 字体设置成功: {custom_font_prop.get_name()}")
+            except Exception as e:
+                print(f"[PDF] matplotlib 字体设置失败: {e}")
 
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4,
@@ -547,6 +623,10 @@ def export_compare_pdf(task_id: str, db: Session = Depends(get_db)):
             'SmallCN', parent=styles['Normal'],
             fontName=cn_font, fontSize=10, leading=14
         )
+
+        def p(text, style):
+            safe_text = str(text).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            return Paragraph(safe_text, style)
 
         story = []
 
@@ -585,6 +665,7 @@ def export_compare_pdf(task_id: str, db: Session = Depends(get_db)):
         similar_count = summary.get("similar_count", 0)
         repeated_count = summary.get("repeated_count", 0)
 
+        chart_path = None
         try:
             labels = ['独有内容', '相似内容', '重复内容']
             sizes = [unique_total, similar_count, repeated_count]
@@ -596,36 +677,44 @@ def export_compare_pdf(task_id: str, db: Session = Depends(get_db)):
                     sizes, labels=labels, colors=color_list,
                     autopct='%1.1f%%', startangle=90
                 )
-                if font_registered:
-                    from matplotlib.font_manager import FontProperties
-                    font_prop = FontProperties(fname=font_path)
-                    for t in texts:
-                        t.set_fontproperties(font_prop)
-                    for t in autotexts:
-                        t.set_fontproperties(font_prop)
-                ax.axis('equal')
-                plt.title('内容分布', fontsize=14, fontproperties=font_prop if font_registered else None)
+                if font_registered and font_file:
+                    try:
+                        font_prop = FontProperties(fname=font_file)
+                        for t in texts:
+                            t.set_fontproperties(font_prop)
+                            t.set_fontsize(12)
+                        for t in autotexts:
+                            t.set_fontproperties(font_prop)
+                            t.set_fontsize(11)
+                        ax.set_title('内容分布', fontproperties=font_prop, fontsize=14)
+                    except Exception as e:
+                        print(f"[PDF] matplotlib 饼图字体设置失败: {e}")
+                        ax.set_title('内容分布', fontsize=14)
+                else:
+                    ax.set_title('内容分布', fontsize=14)
 
-                import tempfile
+                ax.axis('equal')
+
                 with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
                     chart_path = tmp.name
                 plt.savefig(chart_path, dpi=150, bbox_inches='tight')
                 plt.close(fig)
 
-                from reportlab.platypus import Image
                 img = Image(chart_path, width=12 * cm, height=10 * cm)
                 story.append(img)
                 story.append(Spacer(1, 0.5 * cm))
-
+        except Exception as e:
+            print(f"[PDF] 图表生成失败: {e}")
+            story.append(Paragraph(f"(图表生成失败: {str(e)})", small_style))
+        finally:
+            if chart_path and os.path.exists(chart_path):
                 try:
                     os.unlink(chart_path)
                 except Exception:
                     pass
-        except Exception as e:
-            story.append(Paragraph(f"(图表生成失败: {str(e)})", small_style))
 
         summary_data = [
-            [Paragraph("类别", center_style), Paragraph("数量", center_style)],
+            [Paragraph("<b>类别</b>", center_style), Paragraph("<b>数量</b>", center_style)],
             [Paragraph("文档 A 独有内容", normal_style), Paragraph(str(summary.get("unique_a_count", 0)), center_style)],
             [Paragraph("文档 B 独有内容", normal_style), Paragraph(str(summary.get("unique_b_count", 0)), center_style)],
             [Paragraph("相似但有差异", normal_style), Paragraph(str(similar_count), center_style)],
@@ -654,13 +743,11 @@ def export_compare_pdf(task_id: str, db: Session = Depends(get_db)):
             story.append(Paragraph("（无）", small_style))
         else:
             for idx, chunk in enumerate(unique_a[:50], 1):
-                content = chunk.get("content", "")[:300].replace('<', '&lt;').replace('>', '&gt;').replace('\n', '<br/>')
-                story.append(Paragraph(
-                    f"<b>第 {idx} 条</b>（分块 #{chunk.get('chunk_index', 0) + 1}"
-                    f"{', 第 ' + str(chunk.get('page_number')) + ' 页' if chunk.get('page_number') else ''}）：",
-                    small_style
-                ))
-                story.append(Paragraph(content, normal_style))
+                content = chunk.get("content", "")[:300].replace('\n', '<br/>')
+                page_info = f", 第 {chunk.get('page_number')} 页" if chunk.get('page_number') else ""
+                header = f"<b>第 {idx} 条</b>（分块 #{chunk.get('chunk_index', 0) + 1}{page_info}）："
+                story.append(Paragraph(header, small_style))
+                story.append(p(content, normal_style))
                 story.append(Spacer(1, 0.2 * cm))
 
         story.append(Spacer(1, 0.5 * cm))
@@ -670,13 +757,11 @@ def export_compare_pdf(task_id: str, db: Session = Depends(get_db)):
             story.append(Paragraph("（无）", small_style))
         else:
             for idx, chunk in enumerate(unique_b[:50], 1):
-                content = chunk.get("content", "")[:300].replace('<', '&lt;').replace('>', '&gt;').replace('\n', '<br/>')
-                story.append(Paragraph(
-                    f"<b>第 {idx} 条</b>（分块 #{chunk.get('chunk_index', 0) + 1}"
-                    f"{', 第 ' + str(chunk.get('page_number')) + ' 页' if chunk.get('page_number') else ''}）：",
-                    small_style
-                ))
-                story.append(Paragraph(content, normal_style))
+                content = chunk.get("content", "")[:300].replace('\n', '<br/>')
+                page_info = f", 第 {chunk.get('page_number')} 页" if chunk.get('page_number') else ""
+                header = f"<b>第 {idx} 条</b>（分块 #{chunk.get('chunk_index', 0) + 1}{page_info}）："
+                story.append(Paragraph(header, small_style))
+                story.append(p(content, normal_style))
                 story.append(Spacer(1, 0.2 * cm))
 
         story.append(PageBreak())
@@ -696,13 +781,13 @@ def export_compare_pdf(task_id: str, db: Session = Depends(get_db)):
             for idx, pair in enumerate(repeated[:50], 1):
                 ca = pair.get("chunk_a", {})
                 cb = pair.get("chunk_b", {})
-                text_a = ca.get("content", "")[:100].replace('<', '&lt;').replace('>', '&gt;').replace('\n', ' ')
-                text_b = cb.get("content", "")[:100].replace('<', '&lt;').replace('>', '&gt;').replace('\n', ' ')
+                text_a = ca.get("content", "")[:100].replace('\n', ' ')
+                text_b = cb.get("content", "")[:100].replace('\n', ' ')
                 sim = f"{(pair.get('similarity', 0) * 100):.1f}%"
                 rep_data.append([
                     Paragraph(str(idx), small_style),
-                    Paragraph(text_a, small_style),
-                    Paragraph(text_b, small_style),
+                    p(text_a, small_style),
+                    p(text_b, small_style),
                     Paragraph(sim, center_style)
                 ])
 
@@ -726,6 +811,18 @@ def export_compare_pdf(task_id: str, db: Session = Depends(get_db)):
         if not similar:
             story.append(Paragraph("（无相似但有差异内容）", small_style))
         else:
+            def process_diff_html(diff_text):
+                if not diff_text:
+                    return ""
+                result_text = diff_text
+                result_text = result_text.replace('&', '&amp;')
+                result_text = re.sub(r'<span class="diff-equal">', '', result_text)
+                result_text = re.sub(r'<span class="diff-del">', '<font color="#f56c6c"><s>', result_text)
+                result_text = re.sub(r'<span class="diff-add">', '<font color="#67c23a"><u>', result_text)
+                result_text = result_text.replace('</span>', '</s></u></font>')
+                result_text = result_text.replace('\n', '<br/>')
+                return result_text
+
             for idx, pair in enumerate(similar[:30], 1):
                 ca = pair.get("chunk_a", {})
                 cb = pair.get("chunk_b", {})
@@ -733,24 +830,14 @@ def export_compare_pdf(task_id: str, db: Session = Depends(get_db)):
 
                 story.append(Paragraph(f"<b>差异对 #{idx}</b>（相似度：{sim}）", h2_style))
 
-                import re
-                diff_a = pair.get("diff_a", "")
-                diff_a_clean = re.sub(r'<span class="diff-equal">', '', diff_a)
-                diff_a_clean = re.sub(r'<span class="diff-del">', '<font color="#f56c6c"><s>', diff_a_clean)
-                diff_a_clean = re.sub(r'<span class="diff-add">', '<font color="#67c23a"><u>', diff_a_clean)
-                diff_a_clean = diff_a_clean.replace('</span>', '</s></u></font>')
-
-                diff_b = pair.get("diff_b", "")
-                diff_b_clean = re.sub(r'<span class="diff-equal">', '', diff_b)
-                diff_b_clean = re.sub(r'<span class="diff-del">', '<font color="#f56c6c"><s>', diff_b_clean)
-                diff_b_clean = re.sub(r'<span class="diff-add">', '<font color="#67c23a"><u>', diff_b_clean)
-                diff_b_clean = diff_b_clean.replace('</span>', '</s></u></font>')
+                diff_a = process_diff_html(pair.get("diff_a", "")[:500])
+                diff_b = process_diff_html(pair.get("diff_b", "")[:500])
 
                 diff_data = [
                     [Paragraph(f"<b>文档 A</b>（分块 #{ca.get('chunk_index', 0) + 1}）", small_style),
                      Paragraph(f"<b>文档 B</b>（分块 #{cb.get('chunk_index', 0) + 1}）", small_style)],
-                    [Paragraph(diff_a_clean[:500], small_style),
-                     Paragraph(diff_b_clean[:500], small_style)]
+                    [Paragraph(diff_a, small_style),
+                     Paragraph(diff_b, small_style)]
                 ]
                 diff_table = Table(diff_data, colWidths=[7.5 * cm, 7.5 * cm])
                 diff_table.setStyle(TableStyle([
