@@ -7,7 +7,7 @@
         </el-button>
         <el-divider direction="vertical" />
         <span class="page-title">
-          <el-icon><Bug /></el-icon> 检索调试面板
+          <el-icon><WarnTriangleFilled /></el-icon> 检索调试面板
         </span>
         <el-tag size="small" type="warning">Developer</el-tag>
       </div>
@@ -48,7 +48,7 @@
 
           <el-steps :active="4" finish-status="success" align-center>
             <el-step title="向量化" :description="`${debugInfo?.embedding_time_ms || 0} ms`" />
-            <el-step title="Top-K召回" :description="`${debugInfo?.search_time_ms || 0} ms · ${debugInfo?.initial_recall_count || 0}条" />
+            <el-step title="Top-K召回" :description="`${debugInfo?.search_time_ms || 0} ms · ${debugInfo?.initial_recall_count || 0}条`" />
             <el-step title="重排序" :description="rerankDesc" />
             <el-step title="MMR过滤" :description="mmrDesc" />
           </el-steps>
@@ -138,7 +138,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
-  ArrowLeft, Bug, Search, DataLine
+  ArrowLeft, WarnTriangleFilled, Search, DataLine
 } from '@element-plus/icons-vue'
 import { getKnowledgeBase, searchDocuments } from '@/api'
 

@@ -11,7 +11,7 @@
       </div>
       <div class="nav-right">
         <el-button text @click="goToDebug">
-          <el-icon><Bug /></el-icon> 检索调试
+          <el-icon><WarnTriangleFilled /></el-icon> 检索调试
         </el-button>
         <el-button text @click="showSettings = true">
           <el-icon><Setting /></el-icon> 设置
@@ -112,7 +112,7 @@
           <div v-for="(msg, idx) in messages" :key="msg.id || idx" class="message-wrap" :class="msg.role">
             <div class="message-avatar">
               <el-icon v-if="msg.role === 'user'"><User /></el-icon>
-              <el-icon v-else><Robot /></el-icon>
+              <el-icon v-else><Service /></el-icon>
             </div>
             <div class="message-bubble">
               <template v-if="msg.role === 'user'">{{ msg.content }}</template>
@@ -142,7 +142,7 @@
             </div>
           </div>
           <div v-if="isAsking" class="message-wrap assistant">
-            <div class="message-avatar"><el-icon><Robot /></el-icon></div>
+            <div class="message-avatar"><el-icon><Service /></el-icon></div>
             <div class="message-bubble">
               <div class="typing-indicator">
                 <span></span><span></span><span></span>
@@ -214,8 +214,8 @@ import { ref, reactive, computed, onMounted, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  ArrowLeft, Bug, Setting, Upload, UploadFilled, Document, Delete,
-  ChatDotRound, User, Robot, Reading, Plus, Promotion, MoreFilled
+  ArrowLeft, WarnTriangleFilled, Setting, Upload, UploadFilled, Document, Delete,
+  ChatDotRound, User, Service, Reading, Plus, Promotion
 } from '@element-plus/icons-vue'
 import {
   getKnowledgeBase, updateKnowledgeBase, listDocuments, uploadDocument,
