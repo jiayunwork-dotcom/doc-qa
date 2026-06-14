@@ -14,6 +14,7 @@ class VectorIndex:
         self.dimension = dimension
         self._index = None
         self._chunk_ids: List[str] = []
+        self._vectors: Optional[np.ndarray] = None
         self._deleted_mask: set = set()
         self._lock = threading.RLock()
         self._use_ivf = False
@@ -36,6 +37,7 @@ class VectorIndex:
             if not os.path.exists(self._index_path):
                 self._index = self._create_flat_index()
                 self._chunk_ids = []
+                self._vectors = None
                 self._deleted_mask = set()
                 return False
             try:
@@ -46,10 +48,18 @@ class VectorIndex:
                         self._chunk_ids = meta.get("chunk_ids", [])
                         self._deleted_mask = set(meta.get("deleted_mask", set()))
                         self._use_ivf = meta.get("use_ivf", False)
+                        self._vectors = meta.get("vectors")
+                if self._vectors is None and self._index is not None and self._index.ntotal > 0:
+                    try:
+                        xb = faiss.rev_swig_ptr(self._index.get_xb(), self._index.ntotal * self.dimension)
+                        self._vectors = np.array(xb).reshape(self._index.ntotal, self.dimension).astype(np.float32).copy()
+                    except Exception:
+                        self._vectors = None
                 return True
             except Exception:
                 self._index = self._create_flat_index()
                 self._chunk_ids = []
+                self._vectors = None
                 self._deleted_mask = set()
                 return False
 
@@ -61,7 +71,8 @@ class VectorIndex:
                     pickle.dump({
                         "chunk_ids": self._chunk_ids,
                         "deleted_mask": list(self._deleted_mask),
-                        "use_ivf": self._use_ivf
+                        "use_ivf": self._use_ivf,
+                        "vectors": self._vectors
                     }, f)
             except Exception as e:
                 print(f"Failed to save index: {e}")
@@ -73,6 +84,11 @@ class VectorIndex:
 
             if vectors.ndim == 1:
                 vectors = vectors.reshape(1, -1)
+
+            if self._vectors is None:
+                self._vectors = vectors.astype(np.float32).copy()
+            else:
+                self._vectors = np.vstack([self._vectors, vectors.astype(np.float32)])
 
             total_count = len(self._chunk_ids) + vectors.shape[0]
             should_switch_ivf = total_count > settings.IVF_THRESHOLD and not self._use_ivf
@@ -162,17 +178,27 @@ class VectorIndex:
             if not valid_indices:
                 self._index = self._create_flat_index()
                 self._chunk_ids = []
+                self._vectors = None
                 self._deleted_mask = set()
                 self._use_ivf = False
                 return
 
-            if self._index.ntotal > 0:
-                xb = faiss.rev_swig_ptr(self._index.get_xb(), self._index.ntotal * self.dimension)
-                xb = np.array(xb).reshape(self._index.ntotal, self.dimension).astype(np.float32)
-                valid_vectors = xb[valid_indices]
+            if self._vectors is not None:
+                valid_vectors = self._vectors[valid_indices]
+            elif self._index.ntotal > 0:
+                try:
+                    xb = faiss.rev_swig_ptr(self._index.get_xb(), self._index.ntotal * self.dimension)
+                    xb = np.array(xb).reshape(self._index.ntotal, self.dimension).astype(np.float32)
+                    valid_vectors = xb[valid_indices]
+                except Exception:
+                    valid_vectors = None
+            else:
+                valid_vectors = None
 
+            if valid_vectors is not None:
                 self._index = self._create_flat_index()
                 self._index.add(valid_vectors)
+                self._vectors = valid_vectors
                 self._use_ivf = False
 
             self._chunk_ids = valid_chunk_ids
@@ -184,20 +210,27 @@ class VectorIndex:
                 return {}
 
             id_to_idx = {cid: i for i, cid in enumerate(self._chunk_ids)}
-            target_indices = [id_to_idx[cid] for cid in chunk_ids if cid in id_to_idx and cid not in self._deleted_mask]
 
-            if not target_indices:
+            if self._vectors is not None:
+                result = {}
+                for cid in chunk_ids:
+                    if cid in id_to_idx and cid not in self._deleted_mask:
+                        idx = id_to_idx[cid]
+                        result[cid] = self._vectors[idx].copy()
+                return result
+
+            try:
+                xb = faiss.rev_swig_ptr(self._index.get_xb(), self._index.ntotal * self.dimension)
+                xb = np.array(xb).reshape(self._index.ntotal, self.dimension).astype(np.float32)
+
+                result = {}
+                for cid in chunk_ids:
+                    if cid in id_to_idx and cid not in self._deleted_mask:
+                        idx = id_to_idx[cid]
+                        result[cid] = xb[idx].copy()
+                return result
+            except Exception:
                 return {}
-
-            xb = faiss.rev_swig_ptr(self._index.get_xb(), self._index.ntotal * self.dimension)
-            xb = np.array(xb).reshape(self._index.ntotal, self.dimension).astype(np.float32)
-
-            result = {}
-            for cid in chunk_ids:
-                if cid in id_to_idx and cid not in self._deleted_mask:
-                    idx = id_to_idx[cid]
-                    result[cid] = xb[idx].copy()
-            return result
 
     def delete(self):
         with self._lock:
@@ -213,6 +246,7 @@ class VectorIndex:
                     pass
             self._index = None
             self._chunk_ids = []
+            self._vectors = None
             self._deleted_mask = set()
 
 

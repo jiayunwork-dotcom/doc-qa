@@ -260,22 +260,20 @@
           <el-form-item label="文档 A">
             <el-select v-model="compareDocA" placeholder="请选择文档 A" style="width: 100%" filterable>
               <el-option
-                v-for="doc in readyDocuments"
+                v-for="doc in docAOptions"
                 :key="doc.id"
                 :label="doc.filename"
                 :value="doc.id"
-                :disabled="doc.id === compareDocB"
               />
             </el-select>
           </el-form-item>
           <el-form-item label="文档 B">
             <el-select v-model="compareDocB" placeholder="请选择文档 B" style="width: 100%" filterable>
               <el-option
-                v-for="doc in readyDocuments"
+                v-for="doc in docBOptions"
                 :key="doc.id"
                 :label="doc.filename"
                 :value="doc.id"
-                :disabled="doc.id === compareDocA"
               />
             </el-select>
           </el-form-item>
@@ -337,6 +335,14 @@ const compareDocB = ref('')
 
 const readyDocuments = computed(() => {
   return documents.value.filter(d => d.status === 'ready')
+})
+
+const docAOptions = computed(() => {
+  return readyDocuments.value.filter(d => d.id !== compareDocB.value)
+})
+
+const docBOptions = computed(() => {
+  return readyDocuments.value.filter(d => d.id !== compareDocA.value)
 })
 
 const canCompare = computed(() => {

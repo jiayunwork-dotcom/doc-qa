@@ -80,22 +80,29 @@ def get_compare_result(task_id: str, db: Session = Depends(get_db)):
 
     result = task.result or {}
 
-    response = CompareResultResponse(
-        task_id=task.id,
-        status=task.status,
-        progress=task.progress,
-        message=task.message,
-        error_message=task.error_message or ""
-    )
-
     if task.status == "completed" and result:
-        response.doc_a = result.get("doc_a")
-        response.doc_b = result.get("doc_b")
-        response.summary = result.get("summary")
-        response.unique_a = result.get("unique_a", [])
-        response.unique_b = result.get("unique_b", [])
-        response.similar_pairs = result.get("similar_pairs", [])
-        response.repeated_pairs = result.get("repeated_pairs", [])
-        response.thresholds = result.get("thresholds")
+        response = CompareResultResponse(
+            task_id=task.id,
+            status=task.status,
+            progress=task.progress,
+            message=task.message,
+            error_message=task.error_message or "",
+            doc_a=result.get("doc_a"),
+            doc_b=result.get("doc_b"),
+            summary=result.get("summary"),
+            unique_a=result.get("unique_a", []),
+            unique_b=result.get("unique_b", []),
+            similar_pairs=result.get("similar_pairs", []),
+            repeated_pairs=result.get("repeated_pairs", []),
+            thresholds=result.get("thresholds")
+        )
+    else:
+        response = CompareResultResponse(
+            task_id=task.id,
+            status=task.status,
+            progress=task.progress,
+            message=task.message,
+            error_message=task.error_message or ""
+        )
 
     return response

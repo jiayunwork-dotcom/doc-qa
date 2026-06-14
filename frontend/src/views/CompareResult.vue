@@ -137,7 +137,7 @@
                         <span class="col-meta">第 {{ pair.chunk_a.chunk_index + 1 }} 块</span>
                         <span v-if="pair.chunk_a.page_number" class="col-meta">第 {{ pair.chunk_a.page_number }} 页</span>
                       </div>
-                      <div class="diff-text" v-html="pair.diff_a"></div>
+                      <div class="diff-text" v-html="getDiffHtml(pair.diff_a)"></div>
                     </div>
                     <div class="diff-col">
                       <div class="diff-col-header">
@@ -145,7 +145,7 @@
                         <span class="col-meta">第 {{ pair.chunk_b.chunk_index + 1 }} 块</span>
                         <span v-if="pair.chunk_b.page_number" class="col-meta">第 {{ pair.chunk_b.page_number }} 页</span>
                       </div>
-                      <div class="diff-text" v-html="pair.diff_b"></div>
+                      <div class="diff-text" v-html="getDiffHtml(pair.diff_b)"></div>
                     </div>
                   </div>
                 </div>
@@ -206,6 +206,13 @@ function getContentPreview(content) {
 function formatSimilarity(score) {
   if (score == null) return '0%'
   return (score * 100).toFixed(1) + '%'
+}
+
+function getDiffHtml(html) {
+  if (!html || typeof html !== 'string') {
+    return ''
+  }
+  return html
 }
 
 async function loadResult() {
