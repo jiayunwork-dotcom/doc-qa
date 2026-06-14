@@ -138,6 +138,27 @@
                     </el-collapse-item>
                   </el-collapse>
                 </div>
+                <div class="feedback-bar">
+                  <span class="feedback-label">此回答是否有用？</span>
+                  <button
+                    class="feedback-btn"
+                    :class="{ active: msg.feedback_score === 1, disabled: msg.feedback_score && msg.feedback_score !== 1 }"
+                    @click="handleFeedback(msg, 1)"
+                    :disabled="!!msg.feedback_score"
+                    title="有用"
+                  >
+                    👍
+                  </button>
+                  <button
+                    class="feedback-btn"
+                    :class="{ active: msg.feedback_score === -1, disabled: msg.feedback_score && msg.feedback_score !== -1 }"
+                    @click="handleFeedback(msg, -1)"
+                    :disabled="!!msg.feedback_score"
+                    title="无用"
+                  >
+                    👎
+                  </button>
+                </div>
               </template>
             </div>
           </div>
@@ -201,6 +222,29 @@
           <el-switch v-model="settingsForm.enable_rerank" />
         </el-form-item>
       </el-form>
+
+      <el-divider content-position="left">反馈统计</el-divider>
+      <div class="feedback-stats" v-loading="loadingFeedbackStats">
+        <div class="stats-row">
+          <div class="stats-item">
+            <div class="stats-value">{{ feedbackStats.total_count }}</div>
+            <div class="stats-label">总评价数</div>
+          </div>
+          <div class="stats-item">
+            <div class="stats-value positive">{{ feedbackStats.positive_rate.toFixed(1) }}%</div>
+            <div class="stats-label">好评率</div>
+          </div>
+          <div class="stats-item">
+            <div class="stats-value thumbs-up">👍 {{ feedbackStats.positive_count }}</div>
+            <div class="stats-label">有用</div>
+          </div>
+          <div class="stats-item">
+            <div class="stats-value thumbs-down">👎 {{ feedbackStats.negative_count }}</div>
+            <div class="stats-label">无用</div>
+          </div>
+        </div>
+      </div>
+
       <template #footer>
         <el-button @click="showSettings = false">取消</el-button>
         <el-button type="primary" @click="saveSettings">保存</el-button>
@@ -219,7 +263,8 @@ import {
 } from '@element-plus/icons-vue'
 import {
   getKnowledgeBase, updateKnowledgeBase, listDocuments, uploadDocument,
-  getTaskStatus, deleteDocument, askQuestion, listConversations, getConversationMessages, deleteConversation
+  getTaskStatus, deleteDocument, askQuestion, listConversations, getConversationMessages, deleteConversation,
+  submitFeedback, getFeedbackStats
 } from '@/api'
 
 const route = useRoute()
@@ -243,6 +288,8 @@ const isAsking = ref(false)
 const currentConversationId = ref(null)
 const conversations = ref([])
 const chatScroll = ref(null)
+const feedbackStats = ref({ total_count: 0, positive_rate: 0, positive_count: 0, negative_count: 0 })
+const loadingFeedbackStats = ref(false)
 
 function formatSize(bytes) {
   if (!bytes) return '0 B'
@@ -401,7 +448,10 @@ function openSettings() {
 }
 
 watch(showSettings, (val) => {
-  if (val) openSettings()
+  if (val) {
+    openSettings()
+    loadFeedbackStats()
+  }
 })
 
 async function saveSettings() {
@@ -411,6 +461,34 @@ async function saveSettings() {
     showSettings.value = false
     loadKb()
   } catch (e) {}
+}
+
+async function loadFeedbackStats() {
+  loadingFeedbackStats.value = true
+  try {
+    feedbackStats.value = await getFeedbackStats(kbId.value)
+  } catch (e) {
+    feedbackStats.value = { total_count: 0, positive_rate: 0, positive_count: 0, negative_count: 0 }
+  } finally {
+    loadingFeedbackStats.value = false
+  }
+}
+
+async function handleFeedback(msg, score) {
+  if (msg.feedback_score) return
+  try {
+    await submitFeedback({ message_id: msg.id, score })
+    msg.feedback_score = score
+    ElMessage.success('感谢您的反馈')
+    loadFeedbackStats()
+  } catch (e) {
+    if (e?.response?.status === 409) {
+      ElMessage.warning('您已经评价过了')
+      msg.feedback_score = score
+    } else {
+      ElMessage.error('反馈提交失败')
+    }
+  }
 }
 
 async function newConversation() {
@@ -468,7 +546,8 @@ async function sendQuestion() {
       role: 'assistant',
       content: resp.answer,
       sources: resp.sources,
-      id: `resp-${Date.now()}`
+      id: resp.message_id,
+      feedback_score: null
     })
     loadConversations()
   } catch (e) {
@@ -836,5 +915,105 @@ onMounted(async () => {
 
 .chat-input-area :deep(.el-textarea__inner) {
   padding: 10px 12px;
+}
+
+.feedback-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.feedback-label {
+  font-size: 12px;
+  color: #909399;
+  margin-right: 4px;
+}
+
+.feedback-btn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid #dcdfe6;
+  background: #fff;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  transition: all 0.2s;
+  padding: 0;
+}
+
+.feedback-btn:hover:not(:disabled) {
+  border-color: #409eff;
+  background: #ecf5ff;
+}
+
+.feedback-btn.active {
+  background: #ecf5ff;
+  border-color: #409eff;
+  transform: scale(1.1);
+}
+
+.feedback-btn.active + .feedback-btn,
+.feedback-btn.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.feedback-btn:disabled {
+  cursor: not-allowed;
+}
+
+.feedback-stats {
+  padding: 0 4px 8px;
+}
+
+.stats-row {
+  display: flex;
+  gap: 12px;
+}
+
+.stats-item {
+  flex: 1;
+  text-align: center;
+  padding: 16px 8px;
+  background: #fafafa;
+  border-radius: 8px;
+  transition: background 0.2s;
+}
+
+.stats-item:hover {
+  background: #f5f7fa;
+}
+
+.stats-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: #303133;
+  margin-bottom: 6px;
+  line-height: 1.2;
+}
+
+.stats-value.positive {
+  color: #67c23a;
+}
+
+.stats-value.thumbs-up {
+  color: #67c23a;
+  font-size: 16px;
+}
+
+.stats-value.thumbs-down {
+  color: #f56c6c;
+  font-size: 16px;
+}
+
+.stats-label {
+  font-size: 12px;
+  color: #909399;
 }
 </style>

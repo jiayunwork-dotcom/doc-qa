@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 
-from ..database import get_db, Conversation, Message
+from ..database import get_db, Conversation, Message, Feedback
 from ..schemas import ConversationResponse, MessageResponse
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
@@ -34,6 +34,12 @@ def get_conversation_messages(conv_id: str, db: Session = Depends(get_db)):
         .order_by(Message.created_at.asc())
         .all()
     )
+    message_ids = [m.id for m in messages]
+    feedbacks = {}
+    if message_ids:
+        fb_list = db.query(Feedback).filter(Feedback.message_id.in_(message_ids)).all()
+        feedbacks = {fb.message_id: fb.score for fb in fb_list}
+
     result = []
     for msg in messages:
         sources = []
@@ -48,7 +54,8 @@ def get_conversation_messages(conv_id: str, db: Session = Depends(get_db)):
             role=msg.role,
             content=msg.content,
             sources=sources,
-            created_at=msg.created_at
+            created_at=msg.created_at,
+            feedback_score=feedbacks.get(msg.id)
         )
         result.append(resp)
     return result

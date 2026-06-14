@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text, DateTime,
@@ -88,6 +89,15 @@ class Message(Base):
     created_at = Column(DateTime, default=func.now())
 
     conversation = relationship("Conversation", back_populates="messages")
+
+
+class Feedback(Base):
+    __tablename__ = "feedbacks"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    message_id = Column(String, ForeignKey("messages.id"), nullable=False, unique=True)
+    score = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=func.now())
 
 
 engine = create_engine(

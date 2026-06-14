@@ -61,3 +61,11 @@ export function getConversationMessages(convId) {
 export function deleteConversation(convId) {
   return request.delete(`/api/conversations/${convId}`)
 }
+
+export function submitFeedback(data) {
+  return request.post('/api/feedbacks', data)
+}
+
+export function getFeedbackStats(kbId) {
+  return request.get(`/api/feedbacks/stats/${kbId}`)
+}

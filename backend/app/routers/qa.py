@@ -133,5 +133,6 @@ def ask_question(req: AskRequest, db: Session = Depends(get_db)):
     return AskResponse(
         answer=answer,
         conversation_id=conversation_id,
+        message_id=ai_msg.id,
         sources=sources
     )

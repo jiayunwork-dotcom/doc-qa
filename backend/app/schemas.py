@@ -83,6 +83,7 @@ class AskRequest(BaseModel):
 class AskResponse(BaseModel):
     answer: str
     conversation_id: str
+    message_id: str
     sources: List[SourceInfo] = []
 
 
@@ -115,6 +116,7 @@ class MessageResponse(BaseModel):
     content: str
     sources: List[SourceInfo] = []
     created_at: datetime
+    feedback_score: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -130,3 +132,26 @@ class ConversationResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class FeedbackCreate(BaseModel):
+    message_id: str
+    score: int = Field(..., description="1表示有用, -1表示无用")
+
+
+class FeedbackResponse(BaseModel):
+    id: str
+    message_id: str
+    score: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class FeedbackStatsResponse(BaseModel):
+    knowledge_base_id: str
+    total_count: int = 0
+    positive_count: int = 0
+    negative_count: int = 0
+    positive_rate: float = 0.0
