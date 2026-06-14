@@ -7,7 +7,7 @@
         </el-button>
         <el-divider direction="vertical" />
         <span class="page-title">
-          <el-icon><WarnTriangleFilled /></el-icon> 检索调试面板
+          <el-icon><Setting /></el-icon> 检索调试面板
         </span>
         <el-tag size="small" type="warning">Developer</el-tag>
       </div>
@@ -47,8 +47,8 @@
           </el-divider>
 
           <el-steps :active="4" finish-status="success" align-center>
-            <el-step title="向量化" :description="`${debugInfo?.embedding_time_ms || 0} ms`" />
-            <el-step title="Top-K召回" :description="`${debugInfo?.search_time_ms || 0} ms · ${debugInfo?.initial_recall_count || 0}条`" />
+            <el-step title="向量化" :description="embeddingDesc" />
+            <el-step title="Top-K召回" :description="recallDesc" />
             <el-step title="重排序" :description="rerankDesc" />
             <el-step title="MMR过滤" :description="mmrDesc" />
           </el-steps>
@@ -126,7 +126,7 @@
       </div>
 
       <div v-else class="empty-state">
-        <el-icon class="empty-icon"><DataLine /></el-icon>
+        <el-icon class="empty-icon"><Search /></el-icon>
         <p>输入查询后查看检索全流程</p>
       </div>
     </div>
@@ -138,7 +138,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
-  ArrowLeft, WarnTriangleFilled, Search, DataLine
+  ArrowLeft, Setting, Search
 } from '@element-plus/icons-vue'
 import { getKnowledgeBase, searchDocuments } from '@/api'
 
@@ -154,6 +154,16 @@ const searching = ref(false)
 const results = ref([])
 const debugInfo = ref(null)
 const activeStages = ref(['recall', 'rerank', 'mmr'])
+
+const embeddingDesc = computed(() => {
+  if (!debugInfo.value) return ''
+  return `${debugInfo.value.embedding_time_ms || 0} ms`
+})
+
+const recallDesc = computed(() => {
+  if (!debugInfo.value) return ''
+  return `${debugInfo.value.search_time_ms || 0} ms · ${debugInfo.value.initial_recall_count || 0}条`
+})
 
 const rerankDesc = computed(() => {
   if (!debugInfo.value) return ''

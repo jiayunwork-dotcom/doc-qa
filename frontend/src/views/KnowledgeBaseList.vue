@@ -2,7 +2,7 @@
   <div class="kb-list-container">
     <div class="kb-list-header">
       <div class="header-left">
-        <el-icon class="logo-icon"><Reading /></el-icon>
+        <el-icon class="logo-icon"><Document /></el-icon>
         <h1 class="title">文档智能问答平台</h1>
       </div>
       <el-button type="primary" :icon="Plus" @click="showCreateDialog = true">
@@ -28,7 +28,7 @@
             <span class="kb-name">{{ kb.name }}</span>
           </div>
           <el-dropdown trigger="click" @click.stop>
-            <el-button text :icon="MoreFilled" size="small" @click.stop />
+            <el-button text :icon="More" size="small" @click.stop />
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item @click.stop="editKnowledgeBase(kb)">
@@ -103,7 +103,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  Plus, MoreFilled, Folder, Edit, Delete, Document, Reading
+  Plus, More, Folder, Edit, Delete, Document
 } from '@element-plus/icons-vue'
 import {
   listKnowledgeBases, createKnowledgeBase, updateKnowledgeBase, deleteKnowledgeBase

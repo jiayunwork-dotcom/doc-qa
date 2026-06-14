@@ -11,7 +11,7 @@
       </div>
       <div class="nav-right">
         <el-button text @click="goToDebug">
-          <el-icon><WarnTriangleFilled /></el-icon> 检索调试
+          <el-icon><Warning /></el-icon> 检索调试
         </el-button>
         <el-button text @click="showSettings = true">
           <el-icon><Setting /></el-icon> 设置
@@ -41,7 +41,7 @@
           @dragleave="isDragging = false"
           @drop.prevent="handleDrop"
         >
-          <el-icon class="upload-icon"><UploadFilled /></el-icon>
+          <el-icon class="upload-icon"><Upload /></el-icon>
           <div class="upload-text">拖拽文件到此处上传</div>
           <div class="upload-hint">支持 PDF / DOCX / TXT / Markdown，单文件最大 50MB</div>
         </div>
@@ -87,7 +87,7 @@
       <div class="chat-panel">
         <div class="chat-header">
           <div class="chat-title">
-            <el-icon><ChatDotRound /></el-icon>
+            <el-icon><Message /></el-icon>
             <span>智能问答</span>
           </div>
           <el-select v-model="currentConversationId" placeholder="选择会话" clearable size="small" style="width: 200px;" @change="loadConversation">
@@ -105,7 +105,7 @@
 
         <el-scrollbar ref="chatScroll" class="chat-messages">
           <div class="welcome-box" v-if="messages.length === 0">
-            <el-icon class="welcome-icon"><Reading /></el-icon>
+            <el-icon class="welcome-icon"><Document /></el-icon>
             <h3>开始提问吧</h3>
             <p>基于知识库中的文档内容，我会为你提供准确的答案</p>
           </div>
@@ -142,7 +142,7 @@
             </div>
           </div>
           <div v-if="isAsking" class="message-wrap assistant">
-            <div class="message-avatar"><el-icon><Service /></el-icon></div>
+            <div class="message-avatar"><el-icon><User /></el-icon></div>
             <div class="message-bubble">
               <div class="typing-indicator">
                 <span></span><span></span><span></span>
@@ -163,7 +163,7 @@
           />
           <el-button
             type="primary"
-            :icon="Promotion"
+            :icon="Check"
             :disabled="!questionInput.trim() || isAsking"
             @click="sendQuestion"
           >
@@ -214,8 +214,8 @@ import { ref, reactive, computed, onMounted, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  ArrowLeft, WarnTriangleFilled, Setting, Upload, UploadFilled, Document, Delete,
-  ChatDotRound, User, Service, Reading, Plus, Promotion
+  ArrowLeft, Warning, Setting, Upload, Document, Delete,
+  Message, User, Plus, Check
 } from '@element-plus/icons-vue'
 import {
   getKnowledgeBase, updateKnowledgeBase, listDocuments, uploadDocument,
