@@ -14,12 +14,19 @@ from ..services.vector_index import remove_vector_index
 router = APIRouter(prefix="/api/knowledge-bases", tags=["knowledge-bases"])
 
 
+def _count_active_documents(db, kb_id):
+    return db.query(Document).filter(
+        Document.knowledge_base_id == kb_id,
+        Document.is_active == True
+    ).count()
+
+
 @router.get("", response_model=List[KnowledgeBaseResponse])
 def list_knowledge_bases(db: Session = Depends(get_db)):
     kbs = db.query(KnowledgeBase).order_by(KnowledgeBase.updated_at.desc()).all()
     result = []
     for kb in kbs:
-        doc_count = db.query(Document).filter(Document.knowledge_base_id == kb.id).count()
+        doc_count = _count_active_documents(db, kb.id)
         resp = KnowledgeBaseResponse.model_validate(kb)
         resp.document_count = doc_count
         result.append(resp)
@@ -51,7 +58,7 @@ def get_knowledge_base(kb_id: str, db: Session = Depends(get_db)):
     kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
     if not kb:
         raise HTTPException(status_code=404, detail="知识库不存在")
-    doc_count = db.query(Document).filter(Document.knowledge_base_id == kb.id).count()
+    doc_count = _count_active_documents(db, kb.id)
     resp = KnowledgeBaseResponse.model_validate(kb)
     resp.document_count = doc_count
     return resp
@@ -70,7 +77,7 @@ def update_knowledge_base(kb_id: str, data: KnowledgeBaseUpdate, db: Session = D
     db.commit()
     db.refresh(kb)
 
-    doc_count = db.query(Document).filter(Document.knowledge_base_id == kb.id).count()
+    doc_count = _count_active_documents(db, kb.id)
     resp = KnowledgeBaseResponse.model_validate(kb)
     resp.document_count = doc_count
     return resp

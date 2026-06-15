@@ -114,6 +114,18 @@ async def upload_document(
     )
     db.add(doc)
     deactivate_other_versions(db, kb_id, file.filename, doc_id)
+
+    event = DocumentVersionEvent(
+        id=str(uuid.uuid4()),
+        document_id=doc_id,
+        knowledge_base_id=kb_id,
+        version=version,
+        event_type="upload",
+        change_summary={"added": 0, "deleted": 0, "modified": 0, "total_current": 0},
+        change_type="format"
+    )
+    db.add(event)
+
     db.commit()
 
     thread = threading.Thread(
@@ -139,6 +151,11 @@ def process_document_with_version(task_id: str, file_path: str, knowledge_base_i
     db = SessionLocal()
     try:
         doc = db.query(Document).filter(Document.id == document_id).first()
+        event = db.query(DocumentVersionEvent).filter(
+            DocumentVersionEvent.document_id == document_id,
+            DocumentVersionEvent.version == version
+        ).first()
+
         if doc and doc.status == "ready":
             prev_doc = db.query(Document).filter(
                 Document.knowledge_base_id == knowledge_base_id,
@@ -169,17 +186,22 @@ def process_document_with_version(task_id: str, file_path: str, knowledge_base_i
                 change_summary["added"] = max(0, doc.chunk_count - prev_doc.chunk_count)
                 change_summary["deleted"] = max(0, prev_doc.chunk_count - doc.chunk_count)
 
-            event = DocumentVersionEvent(
-                id=str(uuid.uuid4()),
-                document_id=document_id,
-                knowledge_base_id=knowledge_base_id,
-                version=version,
-                event_type="upload",
-                change_summary=change_summary,
-                change_type=change_type
-            )
-            db.add(event)
-            db.commit()
+            if event:
+                event.change_summary = change_summary
+                event.change_type = change_type
+                db.commit()
+            else:
+                event = DocumentVersionEvent(
+                    id=str(uuid.uuid4()),
+                    document_id=document_id,
+                    knowledge_base_id=knowledge_base_id,
+                    version=version,
+                    event_type="upload",
+                    change_summary=change_summary,
+                    change_type=change_type
+                )
+                db.add(event)
+                db.commit()
 
             kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == knowledge_base_id).first()
             if kb and kb.enable_change_notification:
@@ -194,6 +216,9 @@ def process_document_with_version(task_id: str, file_path: str, knowledge_base_i
                 )
                 db.add(notification)
                 db.commit()
+        elif event and doc and doc.status == "error":
+            event.change_summary = {"error": doc.error_message or "处理失败"}
+            db.commit()
     except Exception as e:
         import traceback
         traceback.print_exc()

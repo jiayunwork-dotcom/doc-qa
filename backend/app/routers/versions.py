@@ -4,17 +4,14 @@ from sqlalchemy.orm import Session
 from typing import Optional
 from datetime import datetime
 import io
-import copy
 
 from ..database import get_db, Document, KnowledgeBase, Chunk
-from ..schemas import VersionDiffResponse
 from ..services.compare import compare_documents_internal, build_diff_html_internal
-from ..services.task_queue import get_task_manager
 
 router = APIRouter(prefix="/api/versions", tags=["versions"])
 
 
-@router.get("/diff", response_model=VersionDiffResponse)
+@router.get("/diff")
 def compare_versions(
     old_version_id: str,
     new_version_id: str,
@@ -41,18 +38,16 @@ def compare_versions(
         new_doc.id
     )
 
-    response = VersionDiffResponse(
-        doc_old=result.get("doc_a"),
-        doc_new=result.get("doc_b"),
-        summary=result.get("summary"),
-        unique_old=result.get("unique_a", []),
-        unique_new=result.get("unique_b", []),
-        similar_pairs=result.get("similar_pairs", []),
-        repeated_pairs=result.get("repeated_pairs", []),
-        thresholds=result.get("thresholds")
-    )
-
-    return response
+    return {
+        "doc_old": result.get("doc_a"),
+        "doc_new": result.get("doc_b"),
+        "summary": result.get("summary"),
+        "unique_old": result.get("unique_a", []),
+        "unique_new": result.get("unique_b", []),
+        "similar_pairs": result.get("similar_pairs", []),
+        "repeated_pairs": result.get("repeated_pairs", []),
+        "thresholds": result.get("thresholds")
+    }
 
 
 @router.get("/diff/export-pdf")

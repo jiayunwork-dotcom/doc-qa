@@ -414,13 +414,23 @@ async function loadTimeline() {
   try {
     const params = {}
     if (dateRange.value && dateRange.value.length === 2) {
-      params.start_date = dateRange.value[0]
-      params.end_date = dateRange.value[1]
+      const start = dateRange.value[0]
+      const end = dateRange.value[1]
+      if (start) {
+        const sd = start instanceof Date ? start : new Date(start)
+        params.start_date = `${sd.getFullYear()}-${String(sd.getMonth() + 1).padStart(2, '0')}-${String(sd.getDate()).padStart(2, '0')}`
+      }
+      if (end) {
+        const ed = end instanceof Date ? end : new Date(end)
+        params.end_date = `${ed.getFullYear()}-${String(ed.getMonth() + 1).padStart(2, '0')}-${String(ed.getDate()).padStart(2, '0')}`
+      }
     }
     if (filterChangeType.value) {
       params.change_type = filterChangeType.value
     }
     timelineEvents.value = await getDocumentTimeline(docId.value, params)
+  } catch (e) {
+    timelineEvents.value = []
   } finally {
     timelineLoading.value = false
   }

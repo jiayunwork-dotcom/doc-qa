@@ -197,6 +197,46 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    _migrate_db()
+
+
+def _migrate_db():
+    db = SessionLocal()
+    try:
+        import sqlite3
+        conn = engine.raw_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(documents)")
+            existing_columns = {row[1] for row in cursor.fetchall()}
+            migrations = [
+                ("version", "ALTER TABLE documents ADD COLUMN version INTEGER DEFAULT 1"),
+                ("is_active", "ALTER TABLE documents ADD COLUMN is_active BOOLEAN DEFAULT 1"),
+                ("upload_remark", "ALTER TABLE documents ADD COLUMN upload_remark VARCHAR(500) DEFAULT ''"),
+                ("parent_document_id", "ALTER TABLE documents ADD COLUMN parent_document_id VARCHAR DEFAULT ''"),
+            ]
+            for col_name, sql in migrations:
+                if col_name not in existing_columns:
+                    try:
+                        cursor.execute(sql)
+                    except Exception:
+                        pass
+
+            cursor.execute("PRAGMA table_info(knowledge_bases)")
+            kb_columns = {row[1] for row in cursor.fetchall()}
+            if "enable_change_notification" not in kb_columns:
+                try:
+                    cursor.execute("ALTER TABLE knowledge_bases ADD COLUMN enable_change_notification BOOLEAN DEFAULT 0")
+                except Exception:
+                    pass
+
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    finally:
+        db.close()
 
 
 def get_db():

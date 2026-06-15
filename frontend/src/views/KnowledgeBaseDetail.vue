@@ -83,8 +83,8 @@
               <div class="doc-info" @click="goToVersions(doc)">
                 <div class="doc-name" :title="doc.filename">
                   {{ doc.filename }}
-                  <el-tag v-if="doc.version" size="small" type="primary" effect="plain" class="version-tag">
-                    v{{ doc.version }}
+                  <el-tag size="small" type="primary" effect="plain" class="version-tag">
+                    v{{ doc.version || 1 }}
                   </el-tag>
                 </div>
                 <div class="doc-meta">
