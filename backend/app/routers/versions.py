@@ -1,12 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 import io
+import re
 
-from ..database import get_db, Document, KnowledgeBase, Chunk
+from ..database import get_db, Document, KnowledgeBase, Chunk, VersionReview
 from ..services.compare import compare_documents_internal, build_diff_html_internal
+from ..schemas import (
+    VersionReviewUpdateRequest, VersionReviewsResponse
+)
 
 router = APIRouter(prefix="/api/versions", tags=["versions"])
 
@@ -343,3 +347,199 @@ def export_version_diff_pdf(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"PDF生成失败: {str(e)}")
+
+
+@router.get("/reviews", response_model=VersionReviewsResponse)
+def get_version_reviews(
+    old_version_id: str,
+    new_version_id: str,
+    db: Session = Depends(get_db)
+):
+    old_doc = db.query(Document).filter(Document.id == old_version_id).first()
+    new_doc = db.query(Document).filter(Document.id == new_version_id).first()
+
+    if not old_doc or not new_doc:
+        raise HTTPException(status_code=404, detail="版本不存在")
+
+    if old_doc.version > new_doc.version:
+        old_doc, new_doc = new_doc, old_doc
+
+    reviews = db.query(VersionReview).filter(
+        VersionReview.old_version_id == old_doc.id,
+        VersionReview.new_version_id == new_doc.id
+    ).all()
+
+    review_dict = {}
+    for r in reviews:
+        review_dict[r.diff_key] = {
+            "status": r.review_status,
+            "diff_type": r.diff_type,
+            "updated_at": r.updated_at
+        }
+
+    return VersionReviewsResponse(
+        old_version_id=old_doc.id,
+        new_version_id=new_doc.id,
+        reviews=review_dict
+    )
+
+
+@router.post("/reviews")
+def update_version_review(
+    request: VersionReviewUpdateRequest,
+    db: Session = Depends(get_db)
+):
+    old_doc = db.query(Document).filter(Document.id == request.old_version_id).first()
+    new_doc = db.query(Document).filter(Document.id == request.new_version_id).first()
+
+    if not old_doc or not new_doc:
+        raise HTTPException(status_code=404, detail="版本不存在")
+
+    if old_doc.version > new_doc.version:
+        old_doc, new_doc = new_doc, old_doc
+
+    review = db.query(VersionReview).filter(
+        VersionReview.old_version_id == old_doc.id,
+        VersionReview.new_version_id == new_doc.id,
+        VersionReview.diff_key == request.diff_key
+    ).first()
+
+    if review:
+        review.review_status = request.review_status
+        review.updated_at = datetime.now()
+    else:
+        review = VersionReview(
+            old_version_id=old_doc.id,
+            new_version_id=new_doc.id,
+            diff_key=request.diff_key,
+            diff_type=request.diff_type,
+            review_status=request.review_status
+        )
+        db.add(review)
+
+    db.commit()
+    db.refresh(review)
+
+    return {
+        "success": True,
+        "review": {
+            "id": review.id,
+            "diff_key": review.diff_key,
+            "status": review.review_status,
+            "updated_at": review.updated_at
+        }
+    }
+
+
+@router.get("/diff/export-md")
+def export_version_diff_markdown(
+    old_version_id: str,
+    new_version_id: str,
+    db: Session = Depends(get_db)
+):
+    old_doc = db.query(Document).filter(Document.id == old_version_id).first()
+    new_doc = db.query(Document).filter(Document.id == new_version_id).first()
+
+    if not old_doc or not new_doc:
+        raise HTTPException(status_code=404, detail="版本不存在")
+
+    if old_doc.knowledge_base_id != new_doc.knowledge_base_id or old_doc.filename != new_doc.filename:
+        raise HTTPException(status_code=400, detail="两个版本不属于同一文档")
+
+    if old_doc.status != "ready" or new_doc.status != "ready":
+        raise HTTPException(status_code=400, detail="两个版本都必须是已处理完成的状态")
+
+    if old_doc.version > new_doc.version:
+        old_doc, new_doc = new_doc, old_doc
+
+    result = compare_documents_internal(
+        old_doc.knowledge_base_id,
+        old_doc.id,
+        new_doc.id
+    )
+
+    lines = []
+    lines.append(f"# {old_doc.filename} - v{old_doc.version} vs v{new_doc.version} 版本差异报告")
+    lines.append("")
+    lines.append(f"> 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append("")
+
+    lines.append("## 一、删除内容（旧版本独有）")
+    lines.append("")
+    unique_old = result.get("unique_a", [])
+    if not unique_old:
+        lines.append("_（无删除内容）_")
+    else:
+        for idx, chunk in enumerate(unique_old, 1):
+            content = chunk.get("content", "").strip()
+            lines.append(f"### {idx}. 分块 #{chunk.get('chunk_index', 0) + 1}")
+            lines.append("")
+            lines.append(f"~~{content}~~")
+            lines.append("")
+
+    lines.append("---")
+    lines.append("")
+    lines.append("## 二、新增内容（新版本独有）")
+    lines.append("")
+    unique_new = result.get("unique_b", [])
+    if not unique_new:
+        lines.append("_（无新增内容）_")
+    else:
+        for idx, chunk in enumerate(unique_new, 1):
+            content = chunk.get("content", "").strip()
+            lines.append(f"### {idx}. 分块 #{chunk.get('chunk_index', 0) + 1}")
+            lines.append("")
+            lines.append(f"**{content}**")
+            lines.append("")
+
+    lines.append("---")
+    lines.append("")
+    lines.append("## 三、修改内容（相似但有差异）")
+    lines.append("")
+    similar = result.get("similar_pairs", [])
+    if not similar:
+        lines.append("_（无修改内容）_")
+    else:
+        def md_diff(diff_html, is_old=True):
+            if not diff_html:
+                return ""
+            text = diff_html
+            text = re.sub(r'<span class="diff-equal">', '', text)
+            if is_old:
+                text = re.sub(r'<span class="diff-del">', '~~', text)
+                text = re.sub(r'<span class="diff-add">', '', text)
+            else:
+                text = re.sub(r'<span class="diff-del">', '', text)
+                text = re.sub(r'<span class="diff-add">', '**', text)
+            if is_old:
+                text = text.replace('</span>', '~~')
+            else:
+                text = text.replace('</span>', '**')
+            return text.strip()
+
+        for idx, pair in enumerate(similar, 1):
+            ca = pair.get("chunk_a", {})
+            cb = pair.get("chunk_b", {})
+            sim = f"{(pair.get('similarity', 0) * 100):.1f}%"
+
+            lines.append(f"### 差异对 #{idx}（相似度：{sim}）")
+            lines.append("")
+            lines.append(f"**旧版本 v{old_doc.version}** · 分块 #{ca.get('chunk_index', 0) + 1}")
+            lines.append("")
+            lines.append(f"> {md_diff(pair.get('diff_a', ''), is_old=True)}")
+            lines.append("")
+            lines.append(f"**新版本 v{new_doc.version}** · 分块 #{cb.get('chunk_index', 0) + 1}")
+            lines.append("")
+            lines.append(f"> {md_diff(pair.get('diff_b', ''), is_old=False)}")
+            lines.append("")
+
+    md_content = "\n".join(lines)
+    buffer = io.BytesIO(md_content.encode('utf-8'))
+
+    filename = f"版本差异报告_{old_doc.filename[:20]}_v{old_doc.version}_vs_v{new_doc.version}_{datetime.now().strftime('%Y%m%d%H%M%S')}.md"
+
+    return StreamingResponse(
+        buffer,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename.encode('utf-8').decode('latin-1')}"}
+    )

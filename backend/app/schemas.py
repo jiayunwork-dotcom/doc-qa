@@ -351,3 +351,70 @@ class BatchCompareOverviewResponse(BaseModel):
     document_names: List[str] = []
     matrix: List[List[BatchCompareMatrixCell]] = []
     error_message: str = ""
+
+
+class VersionReviewItem(BaseModel):
+    id: str
+    old_version_id: str
+    new_version_id: str
+    diff_key: str
+    diff_type: str
+    review_status: str
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class VersionReviewUpdateRequest(BaseModel):
+    old_version_id: str
+    new_version_id: str
+    diff_key: str
+    diff_type: str
+    review_status: str
+
+
+class VersionReviewsResponse(BaseModel):
+    old_version_id: str
+    new_version_id: str
+    reviews: dict = {}
+
+
+class TimelineCommentCreate(BaseModel):
+    event_id: str
+    content: str
+
+
+class TimelineCommentResponse(BaseModel):
+    id: str
+    event_id: str
+    content: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class TimelineEventWithCommentsResponse(BaseModel):
+    id: str
+    document_id: str
+    knowledge_base_id: str
+    version: int
+    event_type: str
+    change_summary: dict = {}
+    change_type: str = "format"
+    rollback_from_version: Optional[int] = None
+    rollback_to_version: Optional[int] = None
+    created_at: datetime
+    comments: List[TimelineCommentResponse] = []
+
+
+class VersionFavoriteToggleRequest(BaseModel):
+    document_id: str
+
+
+class VersionFavoriteResponse(BaseModel):
+    document_id: str
+    is_favorited: bool
+    updated_at: datetime

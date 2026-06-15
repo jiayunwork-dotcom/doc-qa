@@ -7,6 +7,7 @@ import io
 import itertools
 import threading
 import uuid
+import re
 
 from ..database import get_db, SessionLocal, Document, KnowledgeBase, CompareTask, CompareIgnore, BatchCompareTask, Chunk
 from ..schemas import (
@@ -932,3 +933,120 @@ def export_compare_pdf(task_id: str, db: Session = Depends(get_db)):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"PDF生成失败: {str(e)}")
+
+
+@router.get("/task/{task_id}/export-md")
+def export_compare_markdown(task_id: str, db: Session = Depends(get_db)):
+    task = get_compare_task_from_db(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if task.status != "completed" or not task.result:
+        raise HTTPException(status_code=400, detail="对比任务未完成，无法导出")
+
+    import copy
+    result = copy.deepcopy(task.result)
+
+    doc_a_name = result.get("doc_a", {}).get("filename", "文档A")
+    doc_b_name = result.get("doc_b", {}).get("filename", "文档B")
+
+    lines = []
+    lines.append(f"# {doc_a_name} vs {doc_b_name} 文档对比差异报告")
+    lines.append("")
+    lines.append(f"> 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append("")
+
+    summary = result.get("summary", {})
+    lines.append("## 摘要统计")
+    lines.append("")
+    lines.append(f"- 文档 A 独有内容：{summary.get('unique_a_count', 0)} 条")
+    lines.append(f"- 文档 B 独有内容：{summary.get('unique_b_count', 0)} 条")
+    lines.append(f"- 相似但有差异：{summary.get('similar_count', 0)} 条")
+    lines.append(f"- 高度重复：{summary.get('repeated_count', 0)} 条")
+    lines.append("")
+
+    lines.append("---")
+    lines.append("")
+    lines.append("## 一、删除内容（文档 A 独有）")
+    lines.append("")
+    unique_a = result.get("unique_a", [])
+    if not unique_a:
+        lines.append("_（无删除内容）_")
+    else:
+        for idx, chunk in enumerate(unique_a, 1):
+            content = chunk.get("content", "").strip()
+            page_info = f"，第 {chunk.get('page_number')} 页" if chunk.get('page_number') else ""
+            lines.append(f"### {idx}. 分块 #{chunk.get('chunk_index', 0) + 1}{page_info}")
+            lines.append("")
+            lines.append(f"~~{content}~~")
+            lines.append("")
+
+    lines.append("---")
+    lines.append("")
+    lines.append("## 二、新增内容（文档 B 独有）")
+    lines.append("")
+    unique_b = result.get("unique_b", [])
+    if not unique_b:
+        lines.append("_（无新增内容）_")
+    else:
+        for idx, chunk in enumerate(unique_b, 1):
+            content = chunk.get("content", "").strip()
+            page_info = f"，第 {chunk.get('page_number')} 页" if chunk.get('page_number') else ""
+            lines.append(f"### {idx}. 分块 #{chunk.get('chunk_index', 0) + 1}{page_info}")
+            lines.append("")
+            lines.append(f"**{content}**")
+            lines.append("")
+
+    lines.append("---")
+    lines.append("")
+    lines.append("## 三、修改内容（相似但有差异）")
+    lines.append("")
+    similar = result.get("similar_pairs", [])
+    if not similar:
+        lines.append("_（无修改内容）_")
+    else:
+        def md_diff_compare(diff_html, is_old=True):
+            if not diff_html:
+                return ""
+            text = diff_html
+            text = re.sub(r'<span class="diff-equal">', '', text)
+            if is_old:
+                text = re.sub(r'<span class="diff-del">', '~~', text)
+                text = re.sub(r'<span class="diff-add">', '', text)
+            else:
+                text = re.sub(r'<span class="diff-del">', '', text)
+                text = re.sub(r'<span class="diff-add">', '**', text)
+            if is_old:
+                text = text.replace('</span>', '~~')
+            else:
+                text = text.replace('</span>', '**')
+            return text.strip()
+
+        for idx, pair in enumerate(similar, 1):
+            ca = pair.get("chunk_a", {})
+            cb = pair.get("chunk_b", {})
+            sim = f"{(pair.get('similarity', 0) * 100):.1f}%"
+            page_a = f"，第 {ca.get('page_number')} 页" if ca.get('page_number') else ""
+            page_b = f"，第 {cb.get('page_number')} 页" if cb.get('page_number') else ""
+
+            lines.append(f"### 差异对 #{idx}（相似度：{sim}）")
+            lines.append("")
+            lines.append(f"**文档 A** · 分块 #{ca.get('chunk_index', 0) + 1}{page_a}")
+            lines.append("")
+            lines.append(f"> {md_diff_compare(pair.get('diff_a', ''), is_old=True)}")
+            lines.append("")
+            lines.append(f"**文档 B** · 分块 #{cb.get('chunk_index', 0) + 1}{page_b}")
+            lines.append("")
+            lines.append(f"> {md_diff_compare(pair.get('diff_b', ''), is_old=False)}")
+            lines.append("")
+
+    md_content = "\n".join(lines)
+    buffer = io.BytesIO(md_content.encode('utf-8'))
+
+    ts = datetime.now().strftime('%Y%m%d%H%M%S')
+    filename = f"对比报告_{doc_a_name[:20]}_vs_{doc_b_name[:20]}_{ts}.md"
+
+    return StreamingResponse(
+        buffer,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename.encode('utf-8').decode('latin-1')}"}
+    )

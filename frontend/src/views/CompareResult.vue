@@ -26,6 +26,16 @@
         >
           {{ exporting ? '生成中...' : '导出PDF' }}
         </el-button>
+        <el-button
+          size="small"
+          :loading="exportingMd"
+          :icon="Download"
+          :disabled="result?.status !== 'completed'"
+          @click="handleExportMarkdown"
+          style="margin-left: 8px;"
+        >
+          {{ exportingMd ? '生成中...' : '导出Markdown' }}
+        </el-button>
         <el-tag v-if="result?.status === 'completed'" type="success" size="small">对比完成</el-tag>
         <el-tag v-else-if="result?.status === 'error'" type="danger" size="small">对比失败</el-tag>
         <el-tag v-else type="warning" size="small">正在处理...</el-tag>
@@ -242,7 +252,7 @@ import {
   ArrowLeft, Document, CircleClose, Loading, Download
 } from '@element-plus/icons-vue'
 import {
-  getCompareResult, addIgnorePair, removeIgnorePair, exportComparePdf
+  getCompareResult, addIgnorePair, removeIgnorePair, exportComparePdf, exportCompareMarkdown
 } from '@/api'
 
 const route = useRoute()
@@ -252,6 +262,7 @@ const taskId = computed(() => route.params.taskId)
 
 const loading = ref(false)
 const exporting = ref(false)
+const exportingMd = ref(false)
 const result = ref(null)
 const activeTab = ref('unique')
 const showIgnored = ref(false)
@@ -381,6 +392,30 @@ async function handleExportPdf() {
     ElMessage.error(e?.response?.data?.detail || 'PDF导出失败')
   } finally {
     exporting.value = false
+  }
+}
+
+async function handleExportMarkdown() {
+  if (exportingMd.value) return
+  exportingMd.value = true
+  try {
+    const blob = await exportCompareMarkdown(taskId.value)
+    const url = window.URL.createObjectURL(new Blob([blob]))
+    const link = document.createElement('a')
+    link.href = url
+    const docA = result.value?.doc_a?.filename || 'docA'
+    const docB = result.value?.doc_b?.filename || 'docB'
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    link.setAttribute('download', `对比报告_${docA.slice(0, 15)}_vs_${docB.slice(0, 15)}_${ts}.md`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+    ElMessage.success('Markdown导出成功')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || 'Markdown导出失败')
+  } finally {
+    exportingMd.value = false
   }
 }
 

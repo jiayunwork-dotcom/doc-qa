@@ -96,6 +96,12 @@ export function exportComparePdf(taskId) {
   })
 }
 
+export function exportCompareMarkdown(taskId) {
+  return request.get(`/api/compare/task/${taskId}/export-md`, {
+    responseType: 'blob'
+  })
+}
+
 export function createBatchCompare(data) {
   return request.post('/api/compare/batch', data)
 }
@@ -151,4 +157,43 @@ export function markAllNotificationsRead(data) {
 
 export function deleteNotification(notificationId) {
   return request.delete(`/api/notifications/${notificationId}`)
+}
+
+export function getVersionReviews(oldVersionId, newVersionId) {
+  return request.get('/api/versions/reviews', {
+    params: { old_version_id: oldVersionId, new_version_id: newVersionId }
+  })
+}
+
+export function updateVersionReview(data) {
+  return request.post('/api/versions/reviews', data)
+}
+
+export function exportVersionDiffMarkdown(oldVersionId, newVersionId) {
+  return request.get('/api/versions/diff/export-md', {
+    params: { old_version_id: oldVersionId, new_version_id: newVersionId },
+    responseType: 'blob'
+  })
+}
+
+export function createTimelineComment(data) {
+  return request.post('/api/documents/timeline/comments', data)
+}
+
+export function deleteTimelineComment(commentId) {
+  return request.delete(`/api/documents/timeline/comments/${commentId}`)
+}
+
+export function listDocumentVersionsWithFavorites(docId, onlyFavorites = false) {
+  return request.get(`/api/documents/${docId}/versions-with-favorites`, {
+    params: { only_favorites: onlyFavorites }
+  })
+}
+
+export function toggleVersionFavorite(documentId) {
+  return request.post('/api/documents/favorites/toggle', { document_id: documentId })
+}
+
+export function listDocumentFavorites(docId) {
+  return request.get(`/api/documents/${docId}/favorites/list`)
 }

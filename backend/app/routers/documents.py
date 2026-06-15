@@ -6,8 +6,12 @@ import os
 import threading
 from datetime import datetime
 
-from ..database import get_db, Document, KnowledgeBase, Chunk, DocumentVersionEvent, Notification
-from ..schemas import DocumentResponse, TaskStatusResponse, DocumentVersionResponse
+from ..database import get_db, Document, KnowledgeBase, Chunk, DocumentVersionEvent, Notification, TimelineComment, VersionFavorite
+from ..schemas import (
+    DocumentResponse, TaskStatusResponse, DocumentVersionResponse,
+    TimelineCommentCreate, TimelineCommentResponse,
+    VersionFavoriteResponse
+)
 from ..config import settings
 from ..services.task_queue import get_task_manager, process_document_task
 from ..services.vector_index import get_vector_index
@@ -487,6 +491,21 @@ def get_document_timeline(
 
     events = query.order_by(DocumentVersionEvent.created_at.desc()).all()
 
+    event_ids = [e.id for e in events]
+    all_comments = db.query(TimelineComment).filter(
+        TimelineComment.event_id.in_(event_ids)
+    ).order_by(TimelineComment.created_at.asc()).all()
+    comments_by_event = {}
+    for c in all_comments:
+        if c.event_id not in comments_by_event:
+            comments_by_event[c.event_id] = []
+        comments_by_event[c.event_id].append({
+            "id": c.id,
+            "event_id": c.event_id,
+            "content": c.content,
+            "created_at": c.created_at
+        })
+
     result = []
     for event in events:
         version_doc = db.query(Document).filter(Document.id == event.document_id).first()
@@ -503,7 +522,156 @@ def get_document_timeline(
             "created_at": event.created_at,
             "filename": version_doc.filename if version_doc else doc.filename,
             "file_size": version_doc.file_size if version_doc else 0,
-            "upload_remark": version_doc.upload_remark if version_doc else ""
+            "upload_remark": version_doc.upload_remark if version_doc else "",
+            "comments": comments_by_event.get(event.id, [])
         })
 
     return result
+
+
+@router.post("/timeline/comments", response_model=TimelineCommentResponse)
+def create_timeline_comment(
+    request: TimelineCommentCreate,
+    db: Session = Depends(get_db)
+):
+    if not request.content or len(request.content.strip()) == 0:
+        raise HTTPException(status_code=400, detail="批注内容不能为空")
+    if len(request.content) > 200:
+        raise HTTPException(status_code=400, detail="批注内容不能超过200字")
+
+    event = db.query(DocumentVersionEvent).filter(DocumentVersionEvent.id == request.event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="时间线事件不存在")
+
+    comment_count = db.query(TimelineComment).filter(TimelineComment.event_id == request.event_id).count()
+    if comment_count >= 3:
+        raise HTTPException(status_code=400, detail="每个时间线节点最多3条批注")
+
+    comment = TimelineComment(
+        event_id=request.event_id,
+        content=request.content.strip()
+    )
+    db.add(comment)
+    db.commit()
+    db.refresh(comment)
+
+    return comment
+
+
+@router.delete("/timeline/comments/{comment_id}")
+def delete_timeline_comment(
+    comment_id: str,
+    db: Session = Depends(get_db)
+):
+    comment = db.query(TimelineComment).filter(TimelineComment.id == comment_id).first()
+    if not comment:
+        raise HTTPException(status_code=404, detail="批注不存在")
+
+    db.delete(comment)
+    db.commit()
+
+    return {"success": True}
+
+
+@router.get("/{doc_id}/versions-with-favorites")
+def list_document_versions_with_favorites(
+    doc_id: str,
+    only_favorites: bool = False,
+    db: Session = Depends(get_db)
+):
+    doc = db.query(Document).filter(Document.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="文档不存在")
+
+    versions = db.query(Document).filter(
+        Document.knowledge_base_id == doc.knowledge_base_id,
+        Document.filename == doc.filename
+    ).order_by(Document.version.desc()).all()
+
+    version_ids = [v.id for v in versions]
+    favorites = db.query(VersionFavorite).filter(
+        VersionFavorite.document_id.in_(version_ids),
+        VersionFavorite.is_favorited == True
+    ).all()
+    favorite_ids = {f.document_id for f in favorites}
+
+    result = []
+    for v in versions:
+        is_favorited = v.id in favorite_ids
+        if only_favorites and not is_favorited:
+            continue
+        result.append({
+            "id": v.id,
+            "knowledge_base_id": v.knowledge_base_id,
+            "filename": v.filename,
+            "file_size": v.file_size,
+            "file_type": v.file_type,
+            "status": v.status,
+            "chunk_count": v.chunk_count,
+            "uploaded_at": v.uploaded_at,
+            "processed_at": v.processed_at,
+            "version": v.version,
+            "is_active": v.is_active,
+            "upload_remark": v.upload_remark or "",
+            "is_favorited": is_favorited
+        })
+
+    return result
+
+
+@router.post("/favorites/toggle", response_model=VersionFavoriteResponse)
+def toggle_version_favorite(
+    request: VersionFavoriteToggleRequest,
+    db: Session = Depends(get_db)
+):
+    doc = db.query(Document).filter(Document.id == request.document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="文档版本不存在")
+
+    favorite = db.query(VersionFavorite).filter(
+        VersionFavorite.document_id == request.document_id
+    ).first()
+
+    if favorite:
+        favorite.is_favorited = not favorite.is_favorited
+        favorite.updated_at = datetime.now()
+    else:
+        favorite = VersionFavorite(
+            document_id=request.document_id,
+            is_favorited=True
+        )
+        db.add(favorite)
+
+    db.commit()
+    db.refresh(favorite)
+
+    return VersionFavoriteResponse(
+        document_id=favorite.document_id,
+        is_favorited=favorite.is_favorited,
+        updated_at=favorite.updated_at
+    )
+
+
+@router.get("/{doc_id}/favorites/list")
+def list_document_favorites(
+    doc_id: str,
+    db: Session = Depends(get_db)
+):
+    doc = db.query(Document).filter(Document.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="文档不存在")
+
+    all_versions = db.query(Document).filter(
+        Document.knowledge_base_id == doc.knowledge_base_id,
+        Document.filename == doc.filename
+    ).all()
+    version_ids = [v.id for v in all_versions]
+
+    favorites = db.query(VersionFavorite).filter(
+        VersionFavorite.document_id.in_(version_ids),
+        VersionFavorite.is_favorited == True
+    ).all()
+
+    return {
+        "favorited_document_ids": [f.document_id for f in favorites]
+    }

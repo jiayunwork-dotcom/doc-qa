@@ -187,6 +187,46 @@ class BatchCompareTask(Base):
     completed_at = Column(DateTime, nullable=True)
 
 
+class VersionReview(Base):
+    __tablename__ = "version_reviews"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    old_version_id = Column(String, ForeignKey("documents.id"), nullable=False)
+    new_version_id = Column(String, ForeignKey("documents.id"), nullable=False)
+    diff_key = Column(String(500), nullable=False)
+    diff_type = Column(String(20), nullable=False)
+    review_status = Column(String(20), default="pending")
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('old_version_id', 'new_version_id', 'diff_key', name='uq_version_review'),
+    )
+
+
+class TimelineComment(Base):
+    __tablename__ = "timeline_comments"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    event_id = Column(String, ForeignKey("document_version_events.id"), nullable=False)
+    content = Column(String(200), nullable=False)
+    created_at = Column(DateTime, default=func.now())
+
+
+class VersionFavorite(Base):
+    __tablename__ = "version_favorites"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    document_id = Column(String, ForeignKey("documents.id"), nullable=False)
+    is_favorited = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('document_id', name='uq_version_favorite'),
+    )
+
+
 engine = create_engine(
     f"sqlite:///{settings.DB_PATH}",
     echo=False,
@@ -227,6 +267,54 @@ def _migrate_db():
             if "enable_change_notification" not in kb_columns:
                 try:
                     cursor.execute("ALTER TABLE knowledge_bases ADD COLUMN enable_change_notification BOOLEAN DEFAULT 0")
+                except Exception:
+                    pass
+
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            existing_tables = {row[0] for row in cursor.fetchall()}
+
+            if "version_reviews" not in existing_tables:
+                try:
+                    cursor.execute("""
+                        CREATE TABLE version_reviews (
+                            id VARCHAR PRIMARY KEY,
+                            old_version_id VARCHAR NOT NULL,
+                            new_version_id VARCHAR NOT NULL,
+                            diff_key VARCHAR(500) NOT NULL,
+                            diff_type VARCHAR(20) NOT NULL,
+                            review_status VARCHAR(20) DEFAULT 'pending',
+                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE(old_version_id, new_version_id, diff_key)
+                        )
+                    """)
+                except Exception:
+                    pass
+
+            if "timeline_comments" not in existing_tables:
+                try:
+                    cursor.execute("""
+                        CREATE TABLE timeline_comments (
+                            id VARCHAR PRIMARY KEY,
+                            event_id VARCHAR NOT NULL,
+                            content VARCHAR(200) NOT NULL,
+                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+                except Exception:
+                    pass
+
+            if "version_favorites" not in existing_tables:
+                try:
+                    cursor.execute("""
+                        CREATE TABLE version_favorites (
+                            id VARCHAR PRIMARY KEY,
+                            document_id VARCHAR NOT NULL UNIQUE,
+                            is_favorited BOOLEAN DEFAULT 1,
+                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
                 except Exception:
                     pass
 
