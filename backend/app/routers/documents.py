@@ -10,7 +10,7 @@ from ..database import get_db, Document, KnowledgeBase, Chunk, DocumentVersionEv
 from ..schemas import (
     DocumentResponse, TaskStatusResponse, DocumentVersionResponse,
     TimelineCommentCreate, TimelineCommentResponse,
-    VersionFavoriteResponse
+    VersionFavoriteToggleRequest, VersionFavoriteResponse
 )
 from ..config import settings
 from ..services.task_queue import get_task_manager, process_document_task
