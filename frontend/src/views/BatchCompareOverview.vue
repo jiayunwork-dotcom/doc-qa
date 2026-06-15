@@ -66,7 +66,7 @@
                       placement="top"
                     >
                       <span class="cell-value" :class="{ 'clickable': cell.status === 'completed' }">
-                        {{ cell.status === 'completed' ? cell.repeat_rate.toFixed(1) + '%' : getStatusLabel(cell.status) }}
+                        {{ cell.status === 'completed' ? formatRepeatRate(cell.repeat_rate) : getStatusLabel(cell.status) }}
                       </span>
                     </el-tooltip>
                     <span v-else class="cell-value self-cell">—</span>
@@ -147,18 +147,25 @@ function getCellStyle(cell, i, j) {
     return { background: '#fafafa' }
   }
   const rate = Math.min(Math.max(cell.repeat_rate, 0), 100)
-  const r = Math.round(255 - rate * 1.5)
-  const g = Math.round(255 - rate * 1.2)
-  const b = Math.round(255 - rate * 0.5)
+  const r = Math.max(Math.round(255 - rate * 1.5), 0)
+  const g = Math.max(Math.round(255 - rate * 1.2), 0)
+  const b = Math.max(Math.round(255 - rate * 0.5), 0)
   return {
     background: `rgb(${r}, ${g}, ${b})`,
     color: rate > 60 ? '#fff' : '#303133'
   }
 }
 
+function formatRepeatRate(rate) {
+  if (rate == null) return '0.0%'
+  const safeRate = Math.min(Math.max(parseFloat(rate) || 0, 0), 100)
+  return safeRate.toFixed(1) + '%'
+}
+
 function getTooltipContent(cell) {
   if (cell.status === 'completed') {
-    return `${cell.doc_a_name} vs ${cell.doc_b_name}\n重复率: ${cell.repeat_rate.toFixed(2)}%\n重复块数: ${cell.repeated_count}/${cell.min_chunk_count}`
+    const rate = Math.min(Math.max(cell.repeat_rate, 0), 100)
+    return `${cell.doc_a_name} vs ${cell.doc_b_name}\n重复率: ${rate.toFixed(1)}%\n重复块数: ${cell.repeated_count}/${cell.min_chunk_count}`
   }
   if (cell.status === 'processing' || cell.status === 'loading' || cell.status === 'pending') {
     return `正在对比中: ${cell.doc_a_name} vs ${cell.doc_b_name}`

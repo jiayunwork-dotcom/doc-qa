@@ -256,6 +256,7 @@ const result = ref(null)
 const activeTab = ref('unique')
 const showIgnored = ref(false)
 const ignoredPairsMap = ref(new Map())
+const serverFiltered = ref(true)
 let pollTimer = null
 
 function goBack() {

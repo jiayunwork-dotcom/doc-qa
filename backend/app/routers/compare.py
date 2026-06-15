@@ -92,7 +92,7 @@ def get_compare_result(task_id: str, include_ignored: bool = False, db: Session 
             message=mem_task.get("message", "")
         )
 
-    task = get_compare_task_from_db(task_id)
+    task = db.query(CompareTask).filter(CompareTask.id == task_id).first()
     if not task:
         if mem_task:
             return CompareResultResponse(
@@ -104,12 +104,22 @@ def get_compare_result(task_id: str, include_ignored: bool = False, db: Session 
         raise HTTPException(status_code=404, detail="任务不存在")
 
     result = task.result or {}
+    if isinstance(result, str):
+        import json
+        try:
+            result = json.loads(result)
+        except Exception:
+            result = {}
 
     ignored_list = get_ignored_pairs(db, task.doc_a_id, task.doc_b_id)
     ignored_pairs = [{"chunk_a_id": ig.chunk_a_id, "chunk_b_id": ig.chunk_b_id} for ig in ignored_list]
+    print(f"[Ignore] task_id={task_id}, include_ignored={include_ignored}, ignored_count={len(ignored_list)}")
 
     if task.status == "completed" and result:
         if not include_ignored:
+            original_similar = len(result.get("similar_pairs", []))
+            original_repeated = len(result.get("repeated_pairs", []))
+            
             result["similar_pairs"] = [
                 p for p in result.get("similar_pairs", [])
                 if not is_pair_ignored(ignored_list, p["chunk_a"]["chunk_id"], p["chunk_b"]["chunk_id"])
@@ -122,6 +132,9 @@ def get_compare_result(task_id: str, include_ignored: bool = False, db: Session 
             summary["similar_count"] = len(result["similar_pairs"])
             summary["repeated_count"] = len(result["repeated_pairs"])
             result["summary"] = summary
+            
+            print(f"[Ignore] 过滤前: similar={original_similar}, repeated={original_repeated}")
+            print(f"[Ignore] 过滤后: similar={len(result['similar_pairs'])}, repeated={len(result['repeated_pairs'])}")
 
         response = CompareResultResponse(
             task_id=task.id,
@@ -158,6 +171,9 @@ def add_ignore_pair(request: IgnorePairRequest, db: Session = Depends(get_db)):
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
 
+    print(f"[Ignore] 添加忽略: task_id={request.task_id}, chunk_a={request.chunk_a_id}, chunk_b={request.chunk_b_id}")
+    print(f"[Ignore] task.doc_a_id={task.doc_a_id}, task.doc_b_id={task.doc_b_id}")
+
     existing = db.query(CompareIgnore).filter(
         ((CompareIgnore.doc_a_id == task.doc_a_id) & (CompareIgnore.doc_b_id == task.doc_b_id) &
          (CompareIgnore.chunk_a_id == request.chunk_a_id) & (CompareIgnore.chunk_b_id == request.chunk_b_id)) |
@@ -166,6 +182,7 @@ def add_ignore_pair(request: IgnorePairRequest, db: Session = Depends(get_db)):
     ).first()
 
     if existing:
+        print(f"[Ignore] 忽略记录已存在: id={existing.id}")
         return IgnorePairResponse(
             id=existing.id,
             doc_a_id=existing.doc_a_id,
@@ -186,6 +203,8 @@ def add_ignore_pair(request: IgnorePairRequest, db: Session = Depends(get_db)):
     db.add(ignore)
     db.commit()
     db.refresh(ignore)
+    
+    print(f"[Ignore] 忽略记录已保存: id={ignore.id}, chunk_a={ignore.chunk_a_id}, chunk_b={ignore.chunk_b_id}")
 
     return IgnorePairResponse(
         id=ignore.id,
@@ -430,7 +449,10 @@ def get_batch_compare_overview(task_id: str, db: Session = Depends(get_db)):
                             chunks_b = t.result.get("doc_b", {}).get("chunk_count", 0)
                             min_chunk_count = min(chunks_a, chunks_b) if chunks_a and chunks_b else 0
                             if min_chunk_count > 0:
-                                repeat_rate = round(repeated_count / min_chunk_count * 100, 2)
+                                raw_rate = repeated_count / min_chunk_count * 100
+                                repeat_rate = round(min(raw_rate, 100.0), 1)
+                            else:
+                                repeat_rate = 0.0
                         elif t:
                             pair_status = t.status
 
@@ -583,14 +605,43 @@ def export_compare_pdf(task_id: str, db: Session = Depends(get_db)):
         font_registered = cn_font != 'Helvetica'
         print(f"[PDF] 最终使用字体: {cn_font}, 字体文件: {font_file}")
 
+        mpl_font_prop = None
+        mpl_font_name = None
         if font_registered and font_file:
             try:
-                custom_font_prop = FontProperties(fname=font_file)
-                plt.rcParams['font.sans-serif'] = [custom_font_prop.get_name()]
+                try:
+                    from matplotlib import font_manager as fm
+                    if font_file.lower().endswith('.ttc'):
+                        try:
+                            fonts = fm.findSystemFonts()
+                            for f in fonts:
+                                if os.path.basename(f).lower() in ['msyh.ttf', 'simhei.ttf', 'microsoftyahei.ttf']:
+                                    fontManager.addfont(f)
+                                    mpl_font_prop = FontProperties(fname=f)
+                                    mpl_font_name = mpl_font_prop.get_name()
+                                    print(f"[PDF] matplotlib 使用系统TTF字体: {f} ({mpl_font_name})")
+                                    break
+                        except Exception:
+                            pass
+                    
+                    if mpl_font_prop is None:
+                        fontManager.addfont(font_file)
+                        mpl_font_prop = FontProperties(fname=font_file)
+                        mpl_font_name = mpl_font_prop.get_name()
+                        print(f"[PDF] matplotlib 注册字体: {font_file} ({mpl_font_name})")
+                except Exception as e:
+                    print(f"[PDF] matplotlib 注册字体失败: {e}")
+                    mpl_font_prop = FontProperties(fname=font_file)
+                    mpl_font_name = None
+                
+                if mpl_font_name:
+                    plt.rcParams['font.sans-serif'] = [mpl_font_name, 'DejaVu Sans', 'sans-serif']
+                    plt.rcParams['font.family'] = 'sans-serif'
                 plt.rcParams['axes.unicode_minus'] = False
-                print(f"[PDF] matplotlib 字体设置成功: {custom_font_prop.get_name()}")
+                print(f"[PDF] matplotlib 字体配置完成, font.sans-serif={plt.rcParams.get('font.sans-serif')}")
             except Exception as e:
-                print(f"[PDF] matplotlib 字体设置失败: {e}")
+                print(f"[PDF] matplotlib 字体配置失败: {e}")
+                mpl_font_prop = None
 
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4,
@@ -677,16 +728,15 @@ def export_compare_pdf(task_id: str, db: Session = Depends(get_db)):
                     sizes, labels=labels, colors=color_list,
                     autopct='%1.1f%%', startangle=90
                 )
-                if font_registered and font_file:
+                if mpl_font_prop:
                     try:
-                        font_prop = FontProperties(fname=font_file)
                         for t in texts:
-                            t.set_fontproperties(font_prop)
+                            t.set_fontproperties(mpl_font_prop)
                             t.set_fontsize(12)
                         for t in autotexts:
-                            t.set_fontproperties(font_prop)
+                            t.set_fontproperties(mpl_font_prop)
                             t.set_fontsize(11)
-                        ax.set_title('内容分布', fontproperties=font_prop, fontsize=14)
+                        ax.set_title('内容分布', fontproperties=mpl_font_prop, fontsize=14)
                     except Exception as e:
                         print(f"[PDF] matplotlib 饼图字体设置失败: {e}")
                         ax.set_title('内容分布', fontsize=14)
