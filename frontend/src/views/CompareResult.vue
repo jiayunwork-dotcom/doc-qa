@@ -291,7 +291,6 @@ function isPairIgnored(chunkAId, chunkBId) {
 async function loadResult() {
   try {
     const data = await getCompareResult(taskId.value, showIgnored.value)
-    result.value = data
 
     const map = new Map()
     if (data.ignored_pairs && data.ignored_pairs.length) {
@@ -300,6 +299,25 @@ async function loadResult() {
       })
     }
     ignoredPairsMap.value = map
+
+    if (!showIgnored.value && map.size > 0) {
+      if (data.repeated_pairs) {
+        data.repeated_pairs = data.repeated_pairs.filter(
+          p => !map.has(getPairKey(p.chunk_a?.chunk_id, p.chunk_b?.chunk_id))
+        )
+      }
+      if (data.similar_pairs) {
+        data.similar_pairs = data.similar_pairs.filter(
+          p => !map.has(getPairKey(p.chunk_a?.chunk_id, p.chunk_b?.chunk_id))
+        )
+      }
+      if (data.summary) {
+        data.summary.repeated_count = data.repeated_pairs?.length || 0
+        data.summary.similar_count = data.similar_pairs?.length || 0
+      }
+    }
+
+    result.value = data
 
     if (data.status === 'completed' || data.status === 'error') {
       stopPolling()
@@ -323,6 +341,7 @@ async function handleIgnorePair(chunkAId, chunkBId, ignoreType) {
       chunk_b_id: chunkBId,
       ignore_type: ignoreType
     })
+    ignoredPairsMap.value.set(getPairKey(chunkAId, chunkBId), { chunk_a_id: chunkAId, chunk_b_id: chunkBId })
     ElMessage.success('已忽略该条目')
     await loadResult()
   } catch (e) {
@@ -333,6 +352,7 @@ async function handleIgnorePair(chunkAId, chunkBId, ignoreType) {
 async function handleUnignorePair(chunkAId, chunkBId) {
   try {
     await removeIgnorePair(taskId.value, chunkAId, chunkBId)
+    ignoredPairsMap.value.delete(getPairKey(chunkAId, chunkBId))
     ElMessage.success('已取消忽略')
     await loadResult()
   } catch (e) {

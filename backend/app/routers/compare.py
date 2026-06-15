@@ -103,7 +103,8 @@ def get_compare_result(task_id: str, include_ignored: bool = False, db: Session 
             )
         raise HTTPException(status_code=404, detail="任务不存在")
 
-    result = task.result or {}
+    import copy
+    result = copy.deepcopy(task.result or {})
     if isinstance(result, str):
         import json
         try:
@@ -111,22 +112,26 @@ def get_compare_result(task_id: str, include_ignored: bool = False, db: Session 
         except Exception:
             result = {}
 
-    ignored_list = get_ignored_pairs(db, task.doc_a_id, task.doc_b_id)
+    try:
+        ignored_list = get_ignored_pairs(db, task.doc_a_id, task.doc_b_id)
+    except Exception as e:
+        print(f"[Ignore] 查询忽略列表失败: {e}")
+        ignored_list = []
     ignored_pairs = [{"chunk_a_id": ig.chunk_a_id, "chunk_b_id": ig.chunk_b_id} for ig in ignored_list]
-    print(f"[Ignore] task_id={task_id}, include_ignored={include_ignored}, ignored_count={len(ignored_list)}")
+    print(f"[Ignore] task_id={task_id}, include_ignored={include_ignored}, ignored_count={len(ignored_list)}, doc_a={task.doc_a_id}, doc_b={task.doc_b_id}")
 
     if task.status == "completed" and result:
-        if not include_ignored:
+        if not include_ignored and ignored_list:
             original_similar = len(result.get("similar_pairs", []))
             original_repeated = len(result.get("repeated_pairs", []))
             
             result["similar_pairs"] = [
                 p for p in result.get("similar_pairs", [])
-                if not is_pair_ignored(ignored_list, p["chunk_a"]["chunk_id"], p["chunk_b"]["chunk_id"])
+                if not is_pair_ignored(ignored_list, str(p.get("chunk_a", {}).get("chunk_id", "")), str(p.get("chunk_b", {}).get("chunk_id", "")))
             ]
             result["repeated_pairs"] = [
                 p for p in result.get("repeated_pairs", [])
-                if not is_pair_ignored(ignored_list, p["chunk_a"]["chunk_id"], p["chunk_b"]["chunk_id"])
+                if not is_pair_ignored(ignored_list, str(p.get("chunk_a", {}).get("chunk_id", "")), str(p.get("chunk_b", {}).get("chunk_id", "")))
             ]
             summary = result.get("summary", {})
             summary["similar_count"] = len(result["similar_pairs"])
@@ -171,6 +176,12 @@ def add_ignore_pair(request: IgnorePairRequest, db: Session = Depends(get_db)):
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
 
+    try:
+        from ..database import Base, engine
+        CompareIgnore.__table__.create(bind=engine, checkfirst=True)
+    except Exception as e:
+        print(f"[Ignore] 确保表存在时出错: {e}")
+
     print(f"[Ignore] 添加忽略: task_id={request.task_id}, chunk_a={request.chunk_a_id}, chunk_b={request.chunk_b_id}")
     print(f"[Ignore] task.doc_a_id={task.doc_a_id}, task.doc_b_id={task.doc_b_id}")
 
@@ -201,10 +212,19 @@ def add_ignore_pair(request: IgnorePairRequest, db: Session = Depends(get_db)):
         ignore_type=request.ignore_type
     )
     db.add(ignore)
-    db.commit()
-    db.refresh(ignore)
+    try:
+        db.commit()
+        db.refresh(ignore)
+    except Exception as e:
+        db.rollback()
+        print(f"[Ignore] 保存忽略记录失败: {e}")
+        raise HTTPException(status_code=500, detail=f"保存忽略记录失败: {str(e)}")
     
-    print(f"[Ignore] 忽略记录已保存: id={ignore.id}, chunk_a={ignore.chunk_a_id}, chunk_b={ignore.chunk_b_id}")
+    verify = db.query(CompareIgnore).filter(CompareIgnore.id == ignore.id).first()
+    if not verify:
+        print(f"[Ignore] 警告: 提交后未找到记录 id={ignore.id}")
+    else:
+        print(f"[Ignore] 忽略记录已保存并验证: id={ignore.id}, chunk_a={ignore.chunk_a_id}, chunk_b={ignore.chunk_b_id}")
 
     return IgnorePairResponse(
         id=ignore.id,
@@ -490,7 +510,8 @@ def export_compare_pdf(task_id: str, db: Session = Depends(get_db)):
     if task.status != "completed" or not task.result:
         raise HTTPException(status_code=400, detail="对比任务未完成，无法导出")
 
-    result = task.result
+    import copy
+    result = copy.deepcopy(task.result)
     kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == task.knowledge_base_id).first()
     kb_name = kb.name if kb else ""
 
@@ -501,19 +522,19 @@ def export_compare_pdf(task_id: str, db: Session = Depends(get_db)):
         from reportlab.lib import colors
         from reportlab.platypus import (
             SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle,
-            ListFlowable, ListItem, Image
+            ListFlowable, ListItem
         )
         from reportlab.pdfbase import pdfmetrics
         from reportlab.pdfbase.ttfonts import TTFont
         from reportlab.pdfbase.cidfonts import UnicodeCIDFont
         from reportlab.lib.enums import TA_CENTER, TA_LEFT
+        from reportlab.graphics.charts.piecharts import Pie
+        from reportlab.graphics.widgets.markers import makeMarker
+        from reportlab.graphics import Drawing
+        from reportlab.graphics.labels import Label
         import os
         import re
-        import tempfile
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-        from matplotlib.font_manager import FontProperties, fontManager
+        import math
 
         def find_chinese_font():
             font_candidates = []
@@ -553,16 +574,11 @@ def export_compare_pdf(task_id: str, db: Session = Depends(get_db)):
                 if os.path.exists(f):
                     font_candidates.append(f)
             
-            for f in fontManager.ttflist:
-                if os.path.exists(f.fname):
-                    fname_lower = f.name.lower()
-                    if any(keyword in fname_lower for keyword in [
-                        'yahei', 'heiti', 'simhei', 'simsun', 'kai',
-                        'pingfang', 'wqy', 'wenquanyi', 'noto sans cjk',
-                        'notosanscjk', 'ar pl', 'stheit'
-                    ]):
-                        if f.fname not in font_candidates:
-                            font_candidates.append(f.fname)
+            app_font_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'fonts')
+            if os.path.isdir(app_font_dir):
+                for fname in os.listdir(app_font_dir):
+                    if fname.lower().endswith(('.ttf', '.ttc')):
+                        font_candidates.insert(0, os.path.join(app_font_dir, fname))
             
             return font_candidates
 
@@ -576,13 +592,12 @@ def export_compare_pdf(task_id: str, db: Session = Depends(get_db)):
                             pdfmetrics.registerFont(TTFont('ChineseFont', fp, fontIndex=0))
                             print(f"[PDF] 成功注册中文字体: {fp} (fontIndex=0)")
                             return 'ChineseFont', fp
-                        except Exception as e1:
+                        except Exception:
                             try:
                                 pdfmetrics.registerFont(TTFont('ChineseFont', fp))
                                 print(f"[PDF] 成功注册中文字体: {fp} (默认索引)")
                                 return 'ChineseFont', fp
-                            except Exception as e2:
-                                print(f"[PDF] 注册字体失败 {fp}: {e2}")
+                            except Exception:
                                 continue
                     else:
                         pdfmetrics.registerFont(TTFont('ChineseFont', fp))
@@ -604,44 +619,6 @@ def export_compare_pdf(task_id: str, db: Session = Depends(get_db)):
         cn_font, font_file = register_chinese_font()
         font_registered = cn_font != 'Helvetica'
         print(f"[PDF] 最终使用字体: {cn_font}, 字体文件: {font_file}")
-
-        mpl_font_prop = None
-        mpl_font_name = None
-        if font_registered and font_file:
-            try:
-                try:
-                    from matplotlib import font_manager as fm
-                    if font_file.lower().endswith('.ttc'):
-                        try:
-                            fonts = fm.findSystemFonts()
-                            for f in fonts:
-                                if os.path.basename(f).lower() in ['msyh.ttf', 'simhei.ttf', 'microsoftyahei.ttf']:
-                                    fontManager.addfont(f)
-                                    mpl_font_prop = FontProperties(fname=f)
-                                    mpl_font_name = mpl_font_prop.get_name()
-                                    print(f"[PDF] matplotlib 使用系统TTF字体: {f} ({mpl_font_name})")
-                                    break
-                        except Exception:
-                            pass
-                    
-                    if mpl_font_prop is None:
-                        fontManager.addfont(font_file)
-                        mpl_font_prop = FontProperties(fname=font_file)
-                        mpl_font_name = mpl_font_prop.get_name()
-                        print(f"[PDF] matplotlib 注册字体: {font_file} ({mpl_font_name})")
-                except Exception as e:
-                    print(f"[PDF] matplotlib 注册字体失败: {e}")
-                    mpl_font_prop = FontProperties(fname=font_file)
-                    mpl_font_name = None
-                
-                if mpl_font_name:
-                    plt.rcParams['font.sans-serif'] = [mpl_font_name, 'DejaVu Sans', 'sans-serif']
-                    plt.rcParams['font.family'] = 'sans-serif'
-                plt.rcParams['axes.unicode_minus'] = False
-                print(f"[PDF] matplotlib 字体配置完成, font.sans-serif={plt.rcParams.get('font.sans-serif')}")
-            except Exception as e:
-                print(f"[PDF] matplotlib 字体配置失败: {e}")
-                mpl_font_prop = None
 
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4,
@@ -716,52 +693,89 @@ def export_compare_pdf(task_id: str, db: Session = Depends(get_db)):
         similar_count = summary.get("similar_count", 0)
         repeated_count = summary.get("repeated_count", 0)
 
-        chart_path = None
         try:
-            labels = ['独有内容', '相似内容', '重复内容']
-            sizes = [unique_total, similar_count, repeated_count]
-            color_list = ['#409eff', '#e6a23c', '#67c23a']
+            pie_data = [unique_total, similar_count, repeated_count]
+            pie_labels = ['独有内容', '相似内容', '重复内容']
+            pie_colors_hex = ['#409eff', '#e6a23c', '#67c23a']
+            pie_colors_rl = [colors.HexColor(c) for c in pie_colors_hex]
 
-            if sum(sizes) > 0:
-                fig, ax = plt.subplots(figsize=(6, 5))
-                wedges, texts, autotexts = ax.pie(
-                    sizes, labels=labels, colors=color_list,
-                    autopct='%1.1f%%', startangle=90
-                )
-                if mpl_font_prop:
-                    try:
-                        for t in texts:
-                            t.set_fontproperties(mpl_font_prop)
-                            t.set_fontsize(12)
-                        for t in autotexts:
-                            t.set_fontproperties(mpl_font_prop)
-                            t.set_fontsize(11)
-                        ax.set_title('内容分布', fontproperties=mpl_font_prop, fontsize=14)
-                    except Exception as e:
-                        print(f"[PDF] matplotlib 饼图字体设置失败: {e}")
-                        ax.set_title('内容分布', fontsize=14)
-                else:
-                    ax.set_title('内容分布', fontsize=14)
+            if sum(pie_data) > 0:
+                drawing_width = 400
+                drawing_height = 280
+                d = Drawing(drawing_width, drawing_height)
 
-                ax.axis('equal')
+                pie = Pie()
+                pie.x = 100
+                pie.y = 30
+                pie.width = 180
+                pie.height = 180
+                pie.data = pie_data
+                pie.labels = pie_labels
 
-                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
-                    chart_path = tmp.name
-                plt.savefig(chart_path, dpi=150, bbox_inches='tight')
-                plt.close(fig)
+                for i, clr in enumerate(pie_colors_rl):
+                    pie.slices[i].fillColor = clr
+                    pie.slices[i].strokeWidth = 0.5
+                    pie.slices[i].strokeColor = colors.white
+                    pie.slices[i].fontName = cn_font
+                    pie.slices[i].fontSize = 11
+                    pie.slices[i].labelRadius = 1.35
 
-                img = Image(chart_path, width=12 * cm, height=10 * cm)
-                story.append(img)
+                pie.slices[0].popout = 5
+
+                d.add(pie)
+
+                title_label = Label()
+                title_label.setText('内容分布')
+                title_label.x = drawing_width / 2
+                title_label.y = drawing_height - 20
+                title_label.fontName = cn_font
+                title_label.fontSize = 14
+                title_label.textAnchor = 'middle'
+                d.add(title_label)
+
+                for i, (val, lbl) in enumerate(zip(pie_data, pie_labels)):
+                    pct = val / sum(pie_data) * 100 if sum(pie_data) > 0 else 0
+                    pct_label = Label()
+                    pct_label.setText(f'{pct:.1f}%')
+                    angle = sum(pie_data[:i]) + val / 2
+                    angle_rad = math.radians(90 - angle / sum(pie_data) * 360 if i == 0 else
+                                             90 - (sum(pie_data[:i]) + val / 2) / sum(pie_data) * 360)
+                    r = 80
+                    cx = pie.x + pie.width / 2
+                    cy = pie.y + pie.height / 2
+                    pct_label.x = cx + r * math.cos(angle_rad)
+                    pct_label.y = cy + r * math.sin(angle_rad)
+                    pct_label.fontName = cn_font
+                    pct_label.fontSize = 9
+                    pct_label.textAnchor = 'middle'
+                    d.add(pct_label)
+
+                story.append(d)
+                story.append(Spacer(1, 0.3 * cm))
+
+                legend_data = []
+                row = []
+                for i, (lbl, clr_hex) in enumerate(zip(pie_labels, pie_colors_hex)):
+                    row.append(Paragraph(f'<font color="{clr_hex}">■</font> {lbl}: {pie_data[i]} ({pie_data[i]/sum(pie_data)*100:.1f}%)', small_style))
+                    if len(row) == 2 or i == len(pie_labels) - 1:
+                        while len(row) < 2:
+                            row.append(Paragraph("", small_style))
+                        legend_data.append(row)
+                        row = []
+                legend_table = Table(legend_data, colWidths=[7 * cm, 7 * cm])
+                legend_table.setStyle(TableStyle([
+                    ('FONTNAME', (0, 0), (-1, -1), cn_font),
+                    ('FONTSIZE', (0, 0), (-1, -1), 10),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('TOPPADDING', (0, 0), (-1, -1), 4),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ]))
+                story.append(legend_table)
                 story.append(Spacer(1, 0.5 * cm))
         except Exception as e:
-            print(f"[PDF] 图表生成失败: {e}")
-            story.append(Paragraph(f"(图表生成失败: {str(e)})", small_style))
-        finally:
-            if chart_path and os.path.exists(chart_path):
-                try:
-                    os.unlink(chart_path)
-                except Exception:
-                    pass
+            print(f"[PDF] 饼图生成失败: {e}")
+            import traceback
+            traceback.print_exc()
 
         summary_data = [
             [Paragraph("<b>类别</b>", center_style), Paragraph("<b>数量</b>", center_style)],
@@ -913,7 +927,7 @@ def export_compare_pdf(task_id: str, db: Session = Depends(get_db)):
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename.encode('utf-8').decode('latin-1')}"}
         )
     except ImportError as e:
-        raise HTTPException(status_code=500, detail=f"缺少PDF生成依赖: {str(e)}。请安装 reportlab 和 matplotlib")
+        raise HTTPException(status_code=500, detail=f"缺少PDF生成依赖: {str(e)}。请安装 reportlab")
     except Exception as e:
         import traceback
         traceback.print_exc()
