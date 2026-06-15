@@ -78,17 +78,6 @@ class DocumentVersionResponse(BaseModel):
         from_attributes = True
 
 
-class VersionDiffResponse(BaseModel):
-    doc_old: Optional[CompareDocInfo] = None
-    doc_new: Optional[CompareDocInfo] = None
-    summary: Optional[CompareSummary] = None
-    unique_old: List[CompareChunkInfo] = []
-    unique_new: List[CompareChunkInfo] = []
-    similar_pairs: List[CompareDiffPair] = []
-    repeated_pairs: List[ComparePair] = []
-    thresholds: Optional[dict] = None
-
-
 class DocumentVersionEventResponse(BaseModel):
     id: str
     document_id: str
@@ -277,6 +266,17 @@ class CompareSummary(BaseModel):
     unique_b_count: int = 0
     similar_count: int = 0
     repeated_count: int = 0
+
+
+class VersionDiffResponse(BaseModel):
+    doc_old: Optional[CompareDocInfo] = None
+    doc_new: Optional[CompareDocInfo] = None
+    summary: Optional[CompareSummary] = None
+    unique_old: List[CompareChunkInfo] = []
+    unique_new: List[CompareChunkInfo] = []
+    similar_pairs: List[CompareDiffPair] = []
+    repeated_pairs: List[ComparePair] = []
+    thresholds: Optional[dict] = None
 
 
 class CompareResultResponse(BaseModel):
