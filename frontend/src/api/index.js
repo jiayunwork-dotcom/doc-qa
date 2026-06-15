@@ -107,3 +107,48 @@ export function getBatchCompareStatus(taskId) {
 export function getBatchCompareOverview(taskId) {
   return request.get(`/api/compare/batch/${taskId}/overview`)
 }
+
+export function listDocumentVersions(docId) {
+  return request.get(`/api/documents/${docId}/versions`)
+}
+
+export function rollbackToVersion(docId, versionId) {
+  return request.post(`/api/documents/${docId}/rollback/${versionId}`)
+}
+
+export function getDocumentTimeline(docId, params) {
+  return request.get(`/api/documents/${docId}/timeline`, { params })
+}
+
+export function compareVersions(oldVersionId, newVersionId) {
+  return request.get('/api/versions/diff', {
+    params: { old_version_id: oldVersionId, new_version_id: newVersionId }
+  })
+}
+
+export function exportVersionDiffPdf(oldVersionId, newVersionId) {
+  return request.get('/api/versions/diff/export-pdf', {
+    params: { old_version_id: oldVersionId, new_version_id: newVersionId },
+    responseType: 'blob'
+  })
+}
+
+export function listNotifications(params) {
+  return request.get('/api/notifications', { params })
+}
+
+export function getUnreadNotificationCount(params) {
+  return request.get('/api/notifications/unread-count', { params })
+}
+
+export function markNotificationRead(notificationId) {
+  return request.post(`/api/notifications/${notificationId}/read`)
+}
+
+export function markAllNotificationsRead(data) {
+  return request.post('/api/notifications/read-all', data)
+}
+
+export function deleteNotification(notificationId) {
+  return request.delete(`/api/notifications/${notificationId}`)
+}

@@ -35,3 +35,23 @@ a {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+.diff-del {
+  background: #fde2e2;
+  color: #f56c6c;
+  text-decoration: line-through;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+
+.diff-add {
+  background: #e1f3d8;
+  color: #67c23a;
+  text-decoration: underline;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+
+.diff-equal {
+  color: inherit;
+}

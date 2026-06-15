@@ -91,6 +91,175 @@ def build_diff_html(text_a: str, text_b: str) -> Dict[str, str]:
     return {"diff_a": "".join(html_a), "diff_b": "".join(html_b)}
 
 
+def build_diff_html_internal(text_a: str, text_b: str) -> Dict[str, str]:
+    return build_diff_html(text_a, text_b)
+
+
+def compare_documents_internal(
+    kb_id: str,
+    doc_a_id: str,
+    doc_b_id: str
+) -> Dict:
+    db = SessionLocal()
+    try:
+        doc_a = db.query(Document).filter(Document.id == doc_a_id).first()
+        doc_b = db.query(Document).filter(Document.id == doc_b_id).first()
+
+        if not doc_a or not doc_b:
+            raise ValueError("文档不存在")
+
+        chunks_a = db.query(Chunk).filter(
+            Chunk.document_id == doc_a_id,
+            Chunk.is_deleted == False
+        ).order_by(Chunk.chunk_index).all()
+
+        chunks_b = db.query(Chunk).filter(
+            Chunk.document_id == doc_b_id,
+            Chunk.is_deleted == False
+        ).order_by(Chunk.chunk_index).all()
+
+        from .embedding import get_embedding_service
+        embed_service = get_embedding_service()
+        vector_index = get_vector_index(kb_id, embed_service.dimension)
+
+        chunk_ids_a = [c.id for c in chunks_a]
+        chunk_ids_b = [c.id for c in chunks_b]
+
+        vectors_a = vector_index.get_vectors_by_ids(chunk_ids_a)
+        vectors_b = vector_index.get_vectors_by_ids(chunk_ids_b)
+
+        missing_a = [cid for cid in chunk_ids_a if cid not in vectors_a]
+        missing_b = [cid for cid in chunk_ids_b if cid not in vectors_b]
+
+        if missing_a:
+            missing_chunks_a = [c for c in chunks_a if c.id in missing_a]
+            texts_a = [c.content for c in missing_chunks_a]
+            if texts_a:
+                new_vecs_a = embed_service.encode(texts_a, batch_size=32)
+                for i, c in enumerate(missing_chunks_a):
+                    vectors_a[c.id] = new_vecs_a[i]
+
+        if missing_b:
+            missing_chunks_b = [c for c in chunks_b if c.id in missing_b]
+            texts_b = [c.content for c in missing_chunks_b]
+            if texts_b:
+                new_vecs_b = embed_service.encode(texts_b, batch_size=32)
+                for i, c in enumerate(missing_chunks_b):
+                    vectors_b[c.id] = new_vecs_b[i]
+
+        best_match_a, best_match_b = compute_chunk_similarities(
+            chunks_a, chunks_b, vectors_a, vectors_b
+        )
+
+        unique_a = []
+        unique_b = []
+        similar_pairs = []
+        repeated_pairs = []
+
+        chunk_a_map = {c.id: c for c in chunks_a}
+        chunk_b_map = {c.id: c for c in chunks_b}
+
+        matched_b_ids = set()
+
+        for ca in chunks_a:
+            best_b_id, score = best_match_a.get(ca.id, ("", 0.0))
+            if score < SIMILARITY_THRESHOLD_UNIQUE:
+                unique_a.append({
+                    "chunk_id": ca.id,
+                    "content": ca.content,
+                    "page_number": ca.page_number,
+                    "chunk_index": ca.chunk_index,
+                    "similarity": round(score, 4)
+                })
+            elif score < SIMILARITY_THRESHOLD_DIFF:
+                cb = chunk_b_map.get(best_b_id)
+                diff = build_diff_html(ca.content, cb.content) if cb else {"diff_a": ca.content, "diff_b": ""}
+                similar_pairs.append({
+                    "chunk_a": {
+                        "chunk_id": ca.id,
+                        "content": ca.content,
+                        "page_number": ca.page_number,
+                        "chunk_index": ca.chunk_index
+                    },
+                    "chunk_b": {
+                        "chunk_id": best_b_id,
+                        "content": cb.content if cb else "",
+                        "page_number": cb.page_number if cb else None,
+                        "chunk_index": cb.chunk_index if cb else 0
+                    },
+                    "similarity": round(score, 4),
+                    "diff_a": diff["diff_a"],
+                    "diff_b": diff["diff_b"]
+                })
+                matched_b_ids.add(best_b_id)
+            else:
+                cb = chunk_b_map.get(best_b_id)
+                repeated_pairs.append({
+                    "chunk_a": {
+                        "chunk_id": ca.id,
+                        "content": ca.content,
+                        "page_number": ca.page_number,
+                        "chunk_index": ca.chunk_index
+                    },
+                    "chunk_b": {
+                        "chunk_id": best_b_id,
+                        "content": cb.content if cb else "",
+                        "page_number": cb.page_number if cb else None,
+                        "chunk_index": cb.chunk_index if cb else 0
+                    },
+                    "similarity": round(score, 4)
+                })
+                matched_b_ids.add(best_b_id)
+
+        for cb in chunks_b:
+            if cb.id in matched_b_ids:
+                continue
+            best_a_id, score = best_match_b.get(cb.id, ("", 0.0))
+            if score < SIMILARITY_THRESHOLD_UNIQUE:
+                unique_b.append({
+                    "chunk_id": cb.id,
+                    "content": cb.content,
+                    "page_number": cb.page_number,
+                    "chunk_index": cb.chunk_index,
+                    "similarity": round(score, 4)
+                })
+
+        result = {
+            "doc_a": {
+                "id": doc_a.id,
+                "filename": doc_a.filename,
+                "chunk_count": len(chunks_a),
+                "unique_count": len(unique_a)
+            },
+            "doc_b": {
+                "id": doc_b.id,
+                "filename": doc_b.filename,
+                "chunk_count": len(chunks_b),
+                "unique_count": len(unique_b)
+            },
+            "summary": {
+                "total_chunks_a": len(chunks_a),
+                "total_chunks_b": len(chunks_b),
+                "unique_a_count": len(unique_a),
+                "unique_b_count": len(unique_b),
+                "similar_count": len(similar_pairs),
+                "repeated_count": len(repeated_pairs)
+            },
+            "unique_a": unique_a,
+            "unique_b": unique_b,
+            "similar_pairs": similar_pairs,
+            "repeated_pairs": repeated_pairs,
+            "thresholds": {
+                "unique": SIMILARITY_THRESHOLD_UNIQUE,
+                "diff": SIMILARITY_THRESHOLD_DIFF
+            }
+        }
+
+        return result
+    finally:
+        db.close()
+
+
 def compare_documents(
     kb_id: str,
     doc_a_id: str,

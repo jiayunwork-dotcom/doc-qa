@@ -11,6 +11,7 @@ class KnowledgeBaseBase(BaseModel):
     chunk_overlap: Optional[int] = 100
     top_k: Optional[int] = 20
     enable_rerank: Optional[bool] = True
+    enable_change_notification: Optional[bool] = False
 
 
 class KnowledgeBaseCreate(KnowledgeBaseBase):
@@ -25,6 +26,7 @@ class KnowledgeBaseUpdate(BaseModel):
     chunk_overlap: Optional[int] = None
     top_k: Optional[int] = None
     enable_rerank: Optional[bool] = None
+    enable_change_notification: Optional[bool] = None
 
 
 class KnowledgeBaseResponse(KnowledgeBaseBase):
@@ -49,9 +51,81 @@ class DocumentResponse(BaseModel):
     error_message: str = ""
     uploaded_at: datetime
     processed_at: Optional[datetime] = None
+    version: int = 1
+    is_active: bool = True
+    upload_remark: str = ""
+    parent_document_id: str = ""
 
     class Config:
         from_attributes = True
+
+
+class DocumentVersionResponse(BaseModel):
+    id: str
+    knowledge_base_id: str
+    filename: str
+    file_size: int
+    file_type: str
+    status: str
+    chunk_count: int
+    uploaded_at: datetime
+    processed_at: Optional[datetime] = None
+    version: int
+    is_active: bool
+    upload_remark: str = ""
+
+    class Config:
+        from_attributes = True
+
+
+class VersionDiffResponse(BaseModel):
+    doc_old: Optional[CompareDocInfo] = None
+    doc_new: Optional[CompareDocInfo] = None
+    summary: Optional[CompareSummary] = None
+    unique_old: List[CompareChunkInfo] = []
+    unique_new: List[CompareChunkInfo] = []
+    similar_pairs: List[CompareDiffPair] = []
+    repeated_pairs: List[ComparePair] = []
+    thresholds: Optional[dict] = None
+
+
+class DocumentVersionEventResponse(BaseModel):
+    id: str
+    document_id: str
+    knowledge_base_id: str
+    version: int
+    event_type: str
+    change_summary: dict = {}
+    change_type: str = "format"
+    rollback_from_version: Optional[int] = None
+    rollback_to_version: Optional[int] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class RollbackRequest(BaseModel):
+    target_version_id: str
+
+
+class NotificationResponse(BaseModel):
+    id: str
+    knowledge_base_id: str
+    document_id: str
+    document_name: str
+    version: int
+    change_summary: dict = {}
+    is_read: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class MarkNotificationsReadRequest(BaseModel):
+    notification_ids: Optional[List[str]] = None
+    all: Optional[bool] = False
 
 
 class TaskStatusResponse(BaseModel):

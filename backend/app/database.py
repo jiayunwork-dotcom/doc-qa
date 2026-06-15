@@ -23,6 +23,7 @@ class KnowledgeBase(Base):
     chunk_overlap = Column(Integer, default=100)
     top_k = Column(Integer, default=20)
     enable_rerank = Column(Boolean, default=True)
+    enable_change_notification = Column(Boolean, default=False)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -44,6 +45,10 @@ class Document(Base):
     error_message = Column(Text, default="")
     uploaded_at = Column(DateTime, default=func.now())
     processed_at = Column(DateTime, nullable=True)
+    version = Column(Integer, default=1)
+    is_active = Column(Boolean, default=True)
+    upload_remark = Column(String(500), default="")
+    parent_document_id = Column(String, default="")
 
     knowledge_base = relationship("KnowledgeBase", back_populates="documents")
     chunks = relationship("Chunk", back_populates="document", cascade="all, delete-orphan")
@@ -135,6 +140,34 @@ class CompareIgnore(Base):
     __table_args__ = (
         UniqueConstraint('doc_a_id', 'doc_b_id', 'chunk_a_id', 'chunk_b_id', name='uq_ignore_pair'),
     )
+
+
+class DocumentVersionEvent(Base):
+    __tablename__ = "document_version_events"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    document_id = Column(String, ForeignKey("documents.id"), nullable=False)
+    knowledge_base_id = Column(String, nullable=False)
+    version = Column(Integer, default=1)
+    event_type = Column(String(20), default="upload")
+    change_summary = Column(JSON, default=dict)
+    change_type = Column(String(20), default="format")
+    rollback_from_version = Column(Integer, nullable=True)
+    rollback_to_version = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    knowledge_base_id = Column(String, nullable=False)
+    document_id = Column(String, nullable=False)
+    document_name = Column(String(500), default="")
+    version = Column(Integer, default=1)
+    change_summary = Column(JSON, default=dict)
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=func.now())
 
 
 class BatchCompareTask(Base):

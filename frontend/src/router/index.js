@@ -30,6 +30,16 @@ const routes = [
     path: '/knowledge-bases/:id/batch-compare/:batchTaskId',
     name: 'BatchCompareOverview',
     component: () => import('@/views/BatchCompareOverview.vue')
+  },
+  {
+    path: '/knowledge-bases/:kbId/documents/:docId/versions',
+    name: 'DocumentVersions',
+    component: () => import('@/views/DocumentVersions.vue')
+  },
+  {
+    path: '/notifications',
+    name: 'Notifications',
+    component: () => import('@/views/Notifications.vue')
   }
 ]
 

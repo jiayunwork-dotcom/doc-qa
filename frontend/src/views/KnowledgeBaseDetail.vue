@@ -80,8 +80,13 @@
               />
               <el-icon v-else style="width: 14px; height: 14px; margin-right: 8px;"></el-icon>
               <el-icon :class="getFileIconClass(doc.file_type)"><Document /></el-icon>
-              <div class="doc-info">
-                <div class="doc-name" :title="doc.filename">{{ doc.filename }}</div>
+              <div class="doc-info" @click="goToVersions(doc)">
+                <div class="doc-name" :title="doc.filename">
+                  {{ doc.filename }}
+                  <el-tag v-if="doc.version" size="small" type="primary" effect="plain" class="version-tag">
+                    v{{ doc.version }}
+                  </el-tag>
+                </div>
                 <div class="doc-meta">
                   <span>{{ formatSize(doc.file_size) }}</span>
                   <span class="dot">·</span>
@@ -249,6 +254,10 @@
         </el-form-item>
         <el-form-item label="重排序">
           <el-switch v-model="settingsForm.enable_rerank" />
+        </el-form-item>
+        <el-form-item label="变更通知">
+          <el-switch v-model="settingsForm.enable_change_notification" />
+          <div class="form-tip">开启后，文档有新版本时会在右上角通知铃铛处提醒</div>
         </el-form-item>
       </el-form>
 
@@ -562,10 +571,15 @@ function openSettings() {
       chunk_size: kb.value.chunk_size,
       chunk_overlap: kb.value.chunk_overlap,
       top_k: kb.value.top_k,
-      enable_rerank: kb.value.enable_rerank
+      enable_rerank: kb.value.enable_rerank,
+      enable_change_notification: kb.value.enable_change_notification || false
     })
   }
   showSettings.value = true
+}
+
+function goToVersions(doc) {
+  router.push(`/knowledge-bases/${kbId.value}/documents/${doc.id}/versions`)
 }
 
 watch(showSettings, (val) => {
@@ -837,6 +851,18 @@ onMounted(async () => {
 .doc-info {
   flex: 1;
   min-width: 0;
+  cursor: pointer;
+}
+
+.version-tag {
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.form-tip {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 4px;
 }
 
 .doc-name {
